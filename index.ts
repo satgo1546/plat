@@ -20,6 +20,7 @@ type Type =
 	| { type: 'namedType', id: string }
 	| { type: 'typeVariable', id: string }
 	| { type: 'instantiation', generic: Type, argument: Type }
+	| { type: 'typeTemplateParameter', id: number }
 
 const builtinTypes = {
 	null: { type: 'namedType', id: 'null' },
@@ -70,15 +71,60 @@ function pairType(left: Type, right: Type): Type {
 	}
 }
 
+type TypeTemplate = {
+	parameterCount: number,
+	type: Type,
+}
+
+function typeTemplateFromType(type: Type, typeVariablesToGeneralize?: Iterable<string>): TypeTemplate {
+	if (typeVariablesToGeneralize) {
+		const s: Substitutions = {}
+		let count = 0
+		const typeVariables = typeVariablesInType(type)
+		for (const v of typeVariablesToGeneralize) {
+			if (typeVariables.has(v)) {
+				s[v] = { type: 'typeTemplateParameter', id: count++ }
+			}
+		}
+		return {
+			parameterCount: count,
+			type: applySubstitutions(s, type)
+		}
+	} else {
+		return {
+			parameterCount: 0,
+			type,
+		}
+	}
+}
+
+function instantiateTypeTemplate(typeTemplate: TypeTemplate): Type {
+	const typeVariables = Array.from({ length: typeTemplate.parameterCount }, newTypeVariable)
+	return (function instantiate(type: Type): Type {
+		switch (type.type) {
+			case 'instantiation':
+				return {
+					type: 'instantiation',
+					generic: instantiate(type.generic),
+					argument: instantiate(type.argument),
+				}
+			case 'typeTemplateParameter':
+				return typeVariables[type.id]
+			default:
+				return type
+		}
+	})(typeTemplate.type)
+}
+
 // 6
 
-type Scope = Record<string, Type>
+type Scope = Record<string, TypeTemplate>
 
 function inferExpression(scope: Scope, expression: Expression): Type {
 	switch (expression.type) {
 		case 'variable':
 			if (Object.hasOwn(scope, expression.id)) {
-				return scope[expression.id]
+				return instantiateTypeTemplate(scope[expression.id])
 			} else {
 				throw new Error(`undefined variable '${expression.id}'`)
 			}
@@ -90,7 +136,7 @@ function inferExpression(scope: Scope, expression: Expression): Type {
 				rational: builtinTypes.float,
 			}[expression.value.type]
 		case 'constructor':
-			return expression.assumption.type
+			return instantiateTypeTemplate(expression.assumption.type)
 		case 'call':
 			const calleeType = inferExpression(scope, expression.callee)
 			const argumentType = inferExpression(scope, expression.argument)
@@ -101,7 +147,7 @@ function inferExpression(scope: Scope, expression: Expression): Type {
 			const parameterType = newTypeVariable()
 			const bodyType = inferExpression({
 				...scope,
-				[expression.parameter]: parameterType,
+				[expression.parameter]: typeTemplateFromType(parameterType),
 			}, expression.body)
 			return functionType(parameterType, bodyType)
 		case 'let':
@@ -118,7 +164,14 @@ function newTypeVariable(): Type & { type: 'typeVariable' } {
 }
 
 function inferLet(scope: Scope, definition: { id: string, value: Expression }): Scope {
-	return { [definition.id]: inferExpression(scope, definition.value) }
+	const t = applySubstitutions(substitutions, inferExpression(scope, definition.value))
+	const typeVariables = typeVariablesInType(t)
+	for (const { type } of Object.values(scope)) {
+		for (const v of typeVariablesInType(applySubstitutions(substitutions, type))) {
+			typeVariables.delete(v)
+		}
+	}
+	return { [definition.id]: typeTemplateFromType(t, typeVariables) }
 }
 
 function inferProgram(scope: Scope, expression: Expression): Type {
@@ -179,6 +232,8 @@ function mostGeneralUnifier(left: Type, right: Type): Substitutions {
 		return mostGeneralUnifier(right, left)
 	} else if (left.type === 'namedType' && right.type === 'namedType' && left.id === right.id) {
 		return {}
+	} else if (left.type === 'typeTemplateParameter' || right.type === 'typeTemplateParameter') {
+		throw new Error('bug')
 	} else {
 		throw new Error('types do not match')
 	}
@@ -211,10 +266,10 @@ import assert from 'node:assert'
 
 const T = newTypeVariable()
 const std = {
-	'+': functionType(builtinTypes.int, functionType(builtinTypes.int, builtinTypes.int)),
-	'++': functionType(builtinTypes.string, functionType(builtinTypes.string, builtinTypes.string)),
-	'cons': functionType(T, functionType(listType(T), listType(T))),
-	'nil': listType(T),
+	'+': typeTemplateFromType(functionType(builtinTypes.int, functionType(builtinTypes.int, builtinTypes.int))),
+	'++': typeTemplateFromType(functionType(builtinTypes.string, functionType(builtinTypes.string, builtinTypes.string))),
+	cons: typeTemplateFromType(functionType(T, functionType(listType(T), listType(T))), [T.id]),
+	nil: typeTemplateFromType(listType(T), [T.id]),
 } satisfies Scope
 
 function lastTypeVariable(n = 1): Type & { type: 'typeVariable' } {
@@ -560,8 +615,7 @@ assert.throws(
 )
 
 // let identity = (\x -> x) in identity identity
-// let-polymorphism required
-if (0) assert.deepStrictEqual(
+assert.deepStrictEqual(
 	inferProgram(std, {
 		type: 'let',
 		definition: {
@@ -578,7 +632,7 @@ if (0) assert.deepStrictEqual(
 			argument: { type: 'variable', id: 'identity' },
 		},
 	}),
-	functionType(lastTypeVariable(), lastTypeVariable()),
+	functionType(lastTypeVariable(2), lastTypeVariable(2)),
 )
 
 // let foo = (\a -> foo a) in foo "x"
