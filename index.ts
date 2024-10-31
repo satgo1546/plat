@@ -1,0 +1,622 @@
+// 2
+
+type Literal =
+	| { type: 'int', value: number }
+	| { type: 'char', value: string }
+	| { type: 'rational', value: { numerator: number, denominator: number } }
+	| { type: 'string', value: string }
+
+type Expression =
+	| { type: 'variable', id: string }
+	| { type: 'literal', value: Literal }
+	| { type: 'constructor', assumption: { id: string, type: Scope[string] } }
+	| { type: 'call', callee: Expression, argument: Expression }
+	| { type: 'function', parameter: string, body: Expression }
+	| { type: 'let', definition: { id: string, value: Expression }, value: Expression }
+
+// 5
+
+type Type =
+	| { type: 'namedType', id: string }
+	| { type: 'typeVariable', id: string }
+	| { type: 'instantiation', generic: Type, argument: Type }
+
+const builtinTypes = {
+	null: { type: 'namedType', id: 'null' },
+	char: { type: 'namedType', id: 'char' },
+	int: { type: 'namedType', id: 'int' },
+	bigint: { type: 'namedType', id: 'bigint' },
+	float: { type: 'namedType', id: 'float' },
+	double: { type: 'namedType', id: 'double' },
+	list: { type: 'namedType', id: 'list' },
+	string: {
+		type: 'instantiation',
+		generic: { type: 'namedType', id: 'list' },
+		argument: { type: 'namedType', id: 'char' },
+	},
+	function: { type: 'namedType', id: 'function' },
+	pair: { type: 'namedType', id: 'pair' },
+} satisfies Record<string, Type>
+
+function functionType(parameter: Type, result: Type): Type {
+	return {
+		type: 'instantiation',
+		generic: {
+			type: 'instantiation',
+			generic: builtinTypes.function,
+			argument: parameter,
+		},
+		argument: result,
+	}
+}
+
+function listType(element: Type): Type {
+	return {
+		type: 'instantiation',
+		generic: builtinTypes.list,
+		argument: element,
+	}
+}
+
+function pairType(left: Type, right: Type): Type {
+	return {
+		type: 'instantiation',
+		generic: {
+			type: 'instantiation',
+			generic: builtinTypes.pair,
+			argument: left,
+		},
+		argument: right,
+	}
+}
+
+// 6
+
+type Scope = Record<string, Type>
+
+function inferExpression(scope: Scope, expression: Expression): Type {
+	switch (expression.type) {
+		case 'variable':
+			if (Object.hasOwn(scope, expression.id)) {
+				return scope[expression.id]
+			} else {
+				throw new Error(`undefined variable '${expression.id}'`)
+			}
+		case 'literal':
+			return {
+				char: builtinTypes.char,
+				int: builtinTypes.int,
+				string: builtinTypes.string,
+				rational: builtinTypes.float,
+			}[expression.value.type]
+		case 'constructor':
+			return expression.assumption.type
+		case 'call':
+			const calleeType = inferExpression(scope, expression.callee)
+			const argumentType = inferExpression(scope, expression.argument)
+			const resultType = newTypeVariable()
+			unify(functionType(argumentType, resultType), calleeType)
+			return resultType
+		case 'function':
+			const parameterType = newTypeVariable()
+			const bodyType = inferExpression({
+				...scope,
+				[expression.parameter]: parameterType,
+			}, expression.body)
+			return functionType(parameterType, bodyType)
+		case 'let':
+			return inferExpression({
+				...scope,
+				...inferLet(scope, expression.definition),
+			}, expression.value)
+	}
+}
+
+let typeVariableCount = 0
+function newTypeVariable(): Type & { type: 'typeVariable' } {
+	return { type: 'typeVariable', id: '_t' + typeVariableCount++ }
+}
+
+function inferLet(scope: Scope, definition: { id: string, value: Expression }): Scope {
+	return { [definition.id]: inferExpression(scope, definition.value) }
+}
+
+function inferProgram(scope: Scope, expression: Expression): Type {
+	substitutions = {}
+	const t = inferExpression(scope, expression)
+	return applySubstitutions(substitutions, t)
+}
+
+// 7
+
+type Substitutions = Record<string, Type>
+
+function applySubstitutions(substitutions: Substitutions, type: Type): Type {
+	switch (type.type) {
+		case 'typeVariable':
+			return substitutions[type.id] ?? type
+		case 'instantiation':
+			return {
+				type: 'instantiation',
+				generic: applySubstitutions(substitutions, type.generic),
+				argument: applySubstitutions(substitutions, type.argument),
+			}
+		default:
+			return type
+	}
+}
+
+function composeSubstitutions(sNew: Substitutions, sOld: Substitutions): Substitutions {
+	const result = { ...sOld }
+	for (const key in result) {
+		result[key] = applySubstitutions(sNew, result[key])
+	}
+	Object.assign(result, sNew)
+	return result
+}
+
+let substitutions: Substitutions = {}
+function extendSubstitutions(s: Substitutions): void {
+	substitutions = composeSubstitutions(s, substitutions)
+}
+
+// 8
+
+function mostGeneralUnifier(left: Type, right: Type): Substitutions {
+	if (left.type === 'instantiation' && right.type === 'instantiation') {
+		const s1 = mostGeneralUnifier(left.generic, right.generic)
+		const s2 = mostGeneralUnifier(applySubstitutions(s1, left.argument), applySubstitutions(s1, right.argument))
+		return composeSubstitutions(s2, s1)
+	} else if (left.type === 'typeVariable') {
+		if (right.type === 'typeVariable' && left.id === right.id) {
+			return {}
+		} else if (typeVariablesInType(right).has(left.id)) {
+			throw new Error('infinite type')
+		} else {
+			return { [left.id]: right }
+		}
+	} else if (right.type === 'typeVariable') {
+		return mostGeneralUnifier(right, left)
+	} else if (left.type === 'namedType' && right.type === 'namedType' && left.id === right.id) {
+		return {}
+	} else {
+		throw new Error('types do not match')
+	}
+}
+
+function unify(type1: Type, type2: Type): void {
+	extendSubstitutions(mostGeneralUnifier(applySubstitutions(substitutions, type1), applySubstitutions(substitutions, type2)))
+}
+
+// 9
+
+function typeVariablesInType(type: Type): Set<string> {
+	switch (type.type) {
+		case 'typeVariable':
+			return new Set([type.id])
+		case 'instantiation':
+			const result = typeVariablesInType(type.generic)
+			for (const v of typeVariablesInType(type.argument)) {
+				result.add(v)
+			}
+			return result
+		default:
+			return new Set
+	}
+}
+
+// 3
+
+import assert from 'node:assert'
+
+const T = newTypeVariable()
+const std = {
+	'+': functionType(builtinTypes.int, functionType(builtinTypes.int, builtinTypes.int)),
+	'++': functionType(builtinTypes.string, functionType(builtinTypes.string, builtinTypes.string)),
+	'cons': functionType(T, functionType(listType(T), listType(T))),
+	'nil': listType(T),
+} satisfies Scope
+
+function lastTypeVariable(n = 1): Type & { type: 'typeVariable' } {
+	return { type: 'typeVariable', id: '_t' + (typeVariableCount - n) }
+}
+
+// someUndefinedVariable
+assert.throws(
+	() => inferProgram(std, { type: 'variable', id: 'someUndefinedVariable' }),
+	/undefined/,
+)
+
+// let a = 10 in [a, a]
+assert.deepStrictEqual(
+	inferProgram(std, {
+		type: 'let',
+		definition: {
+			id: 'a',
+			value: { type: 'literal', value: { type: 'int', value: 10 } },
+		},
+		value: { // (cons a) ((cons a) nil)
+			type: 'call',
+			callee: {
+				type: 'call',
+				callee: { type: 'variable', id: 'cons' },
+				argument: { type: 'variable', id: 'a' },
+			},
+			argument: {
+				type: 'call',
+				callee: {
+					type: 'call',
+					callee: { type: 'variable', id: 'cons' },
+					argument: { type: 'variable', id: 'a' },
+				},
+				argument: { type: 'variable', id: 'nil' },
+			},
+		},
+	}),
+	listType(builtinTypes.int),
+)
+
+// let a = "foo" in let a = 10 in a + a
+assert.deepStrictEqual(
+	inferProgram(std, {
+		type: 'let',
+		definition: { id: 'a', value: { type: 'literal', value: { type: 'string', value: 'foo' } } },
+		value: {
+			type: 'let',
+			definition: { id: 'a', value: { type: 'literal', value: { type: 'int', value: 10 } } },
+			value: {
+				type: 'call',
+				callee: {
+					type: 'call',
+					callee: { type: 'variable', id: '+' },
+					argument: { type: 'variable', id: 'a' },
+				},
+				argument: { type: 'variable', id: 'a' },
+			}
+		}
+	}),
+	builtinTypes.int,
+)
+
+// (\x -> 'q')
+assert.deepStrictEqual(
+	inferProgram(std, {
+		type: 'function',
+		parameter: 'x',
+		body: { type: 'literal', value: { type: 'char', value: 'q' } },
+	}),
+	functionType(lastTypeVariable(), builtinTypes.char),
+)
+
+// (\x -> x)
+assert.deepStrictEqual(
+	inferProgram(std, {
+		type: 'function',
+		parameter: 'x',
+		body: { type: 'variable', id: 'x' },
+	}),
+	functionType(lastTypeVariable(), lastTypeVariable()),
+)
+
+// (\x -> x + x)
+assert.deepStrictEqual(
+	inferProgram(std, {
+		type: 'function',
+		parameter: 'x',
+		body: {
+			type: 'call',
+			callee: {
+				type: 'call',
+				callee: { type: 'variable', id: '+' },
+				argument: { type: 'variable', id: 'x' },
+			},
+			argument: { type: 'variable', id: 'x' },
+		},
+	}),
+	functionType(builtinTypes.int, builtinTypes.int),
+)
+
+// (\x -> (x 123) + x)
+assert.throws(
+	() => inferProgram(std, {
+		type: 'function',
+		parameter: 'x',
+		body: {
+			type: 'call',
+			callee: {
+				type: 'call',
+				callee: { type: 'variable', id: '+' },
+				argument: {
+					type: 'call',
+					callee: { type: 'variable', id: 'x' },
+					argument: { type: 'literal', value: { type: 'int', value: 123 } },
+				},
+			},
+			argument: { type: 'variable', id: 'x' },
+		},
+	}),
+	/match/,
+)
+
+// (\foo -> foo 123)
+assert.deepStrictEqual(
+	inferProgram(std, {
+		type: 'function',
+		parameter: 'foo',
+		body: {
+			type: 'call',
+			callee: { type: 'variable', id: 'foo' },
+			argument: { type: 'literal', value: { type: 'int', value: 123 } },
+		},
+	}),
+	functionType(
+		functionType(builtinTypes.int, lastTypeVariable()),
+		lastTypeVariable(),
+	),
+)
+
+// (\foo -> foo 1 + foo 2)
+assert.deepStrictEqual(
+	inferProgram(std, {
+		type: 'function',
+		parameter: 'foo',
+		body: {
+			type: 'call',
+			callee: {
+				type: 'call',
+				callee: { type: 'variable', id: '+' },
+				argument: {
+					type: 'call',
+					callee: { type: 'variable', id: 'foo' },
+					argument: { type: 'literal', value: { type: 'int', value: 1 } },
+				},
+			},
+			argument: {
+				type: 'call',
+				callee: { type: 'variable', id: 'foo' },
+				argument: { type: 'literal', value: { type: 'int', value: 2 } },
+			},
+		},
+	}),
+	functionType(
+		functionType(builtinTypes.int, builtinTypes.int),
+		builtinTypes.int,
+	),
+)
+
+// (\a -> let b = a in b)
+assert.deepStrictEqual(
+	inferProgram(std, {
+		type: 'function',
+		parameter: 'a',
+		body: {
+			type: 'let',
+			definition: { id: 'b', value: { type: 'variable', id: 'a' } },
+			value: { type: 'variable', id: 'b' },
+		},
+	}),
+	functionType(lastTypeVariable(), lastTypeVariable()),
+)
+
+// (\a -> let b = a in b + b)
+assert.deepStrictEqual(
+	inferProgram(std, {
+		type: 'function',
+		parameter: 'a',
+		body: {
+			type: 'let',
+			definition: { id: 'b', value: { type: 'variable', id: 'a' } },
+			value: {
+				type: 'call',
+				callee: {
+					type: 'call',
+					callee: { type: 'variable', id: '+' },
+					argument: { type: 'variable', id: 'b' },
+				},
+				argument: { type: 'variable', id: 'b' },
+			},
+		},
+	}),
+	functionType(builtinTypes.int, builtinTypes.int),
+)
+
+// let a = 123 in (\x -> a)
+assert.deepStrictEqual(
+	inferProgram(std, {
+		type: 'let',
+		definition: { id: 'a', value: { type: 'literal', value: { type: 'int', value: 123 } } },
+		value: {
+			type: 'function',
+			parameter: 'x',
+			body: { type: 'variable', id: 'a' },
+		}
+	}),
+	functionType(lastTypeVariable(), builtinTypes.int),
+)
+
+// 123 "foo"
+assert.throws(
+	() => inferProgram(std, {
+		type: 'call',
+		callee: { type: 'literal', value: { type: 'int', value: 123 } },
+		argument: { type: 'literal', value: { type: 'string', value: 'foo' } },
+	}),
+	/match/,
+)
+
+// (\s -> "s is: " ++ s) 99
+assert.throws(
+	() => inferProgram(std, {
+		type: 'call',
+		callee: {
+			type: 'function',
+			parameter: 's',
+			body: {
+				type: 'call',
+				callee: {
+					type: 'call',
+					callee: { type: 'variable', id: '++' },
+					argument: { type: 'literal', value: { type: 'string', value: 's is : ' } },
+				},
+				argument: { type: 'variable', id: 's' },
+			},
+		},
+		argument: { type: 'literal', value: { type: 'int', value: 99 } },
+	}),
+	/match/,
+)
+
+// let identity = (\x -> x) in identity "foo"
+assert.deepStrictEqual(
+	inferProgram(std, {
+		type: 'let',
+		definition: {
+			id: 'identity',
+			value: {
+				type: 'function',
+				parameter: 'x',
+				body: { type: 'variable', id: 'x' },
+			},
+		},
+		value: {
+			type: 'call',
+			callee: { type: 'variable', id: 'identity' },
+			argument: { type: 'literal', value: { type: 'string', value: 'foo' } },
+		}
+	}),
+	builtinTypes.string,
+)
+
+// (\s -> let identity = (\x -> x) in "foo" ++ (identity s))
+assert.deepStrictEqual(
+	inferProgram(std, {
+		type: 'function',
+		parameter: 's',
+		body: {
+			type: 'let',
+			definition: {
+				id: 'identity',
+				value: {
+					type: 'function',
+					parameter: 'x',
+					body: { type: 'variable', id: 'x' },
+				},
+			},
+			value: {
+				type: 'call',
+				callee: {
+					type: 'call',
+					callee: { type: 'variable', id: '++' },
+					argument: { type: 'literal', value: { type: 'string', value: 'foo' } },
+				},
+				argument: {
+					type: 'call',
+					callee: { type: 'variable', id: 'identity' },
+					argument: { type: 'variable', id: 's' },
+				},
+			},
+		},
+	}),
+	functionType(builtinTypes.string, builtinTypes.string),
+)
+
+// (\a -> let identity = (\x -> x) in identity a)
+assert.deepStrictEqual(
+	inferProgram(std, {
+		type: 'function',
+		parameter: 'a',
+		body: {
+			type: 'let',
+			definition: {
+				id: 'identity',
+				value: {
+					type: 'function',
+					parameter: 'x',
+					body: { type: 'variable', id: 'x' },
+				},
+			},
+			value: {
+				type: 'call',
+				callee: { type: 'variable', id: 'identity' },
+				argument: { type: 'variable', id: 'a' },
+			},
+		},
+	}),
+	functionType(lastTypeVariable(2), lastTypeVariable(2)),
+)
+
+// (\f -> f f)
+assert.throws(
+	() => inferProgram(std, {
+		type: 'function',
+		parameter: 'f',
+		body: {
+			type: 'call',
+			callee: { type: 'variable', id: 'f' },
+			argument: { type: 'variable', id: 'f' },
+		},
+	}),
+	/infinite/,
+)
+
+// let identity = (\x -> x) in identity identity
+// let-polymorphism required
+if (0) assert.deepStrictEqual(
+	inferProgram(std, {
+		type: 'let',
+		definition: {
+			id: 'identity',
+			value: {
+				type: 'function',
+				parameter: 'x',
+				body: { type: 'variable', id: 'x' },
+			},
+		},
+		value: {
+			type: 'call',
+			callee: { type: 'variable', id: 'identity' },
+			argument: { type: 'variable', id: 'identity' },
+		},
+	}),
+	functionType(lastTypeVariable(), lastTypeVariable()),
+)
+
+// let foo = (\a -> foo a) in foo "x"
+// letrec required
+if (0) assert.deepStrictEqual(
+	inferProgram(std, {
+		type: 'let',
+		definition: {
+			id: 'foo',
+			value: {
+				type: 'function',
+				parameter: 'a',
+				body: {
+					type: 'call',
+					callee: { type: 'variable', id: 'foo' },
+					argument: { type: 'variable', id: 'a' },
+				},
+			},
+		},
+		value: {
+			type: 'call',
+			callee: { type: 'variable', id: 'foo' },
+			argument: { type: 'literal', value: { type: 'string', value: 'x' } },
+		},
+	}),
+	lastTypeVariable(),
+)
+
+// let bar = bar in bar
+// letrec required
+if (0) assert.deepStrictEqual(
+	inferProgram(std, {
+		type: 'let',
+		definition: {
+			id: 'bar',
+			value: { type: 'variable', id: 'bar' },
+		},
+		value: { type: 'variable', id: 'bar' },
+	}),
+	lastTypeVariable(),
+)
