@@ -6,13 +6,15 @@ type Literal =
 	| { type: 'rational', value: number }
 	| { type: 'string', value: string }
 
+type DefinitionGroup = Record<string, Expression>
+
 type Expression =
 	| { type: 'variable', id: string }
 	| { type: 'literal', value: Literal }
 	| { type: 'constructor', assumption: { id: string, type: Scope[string] } }
 	| { type: 'call', callee: Expression, argument: Expression }
 	| { type: 'function', parameter: string, body: Expression }
-	| { type: 'let', definition: { id: string, value: Expression }, value: Expression }
+	| { type: 'let', definitionGroups: DefinitionGroup[], value: Expression }
 
 // 5
 
@@ -153,7 +155,7 @@ function inferExpression(scope: Scope, expression: Expression): Type {
 		case 'let':
 			return inferExpression({
 				...scope,
-				...inferLet(scope, expression.definition),
+				...inferLet(scope, expression.definitionGroups),
 			}, expression.value)
 	}
 }
@@ -163,15 +165,39 @@ function newTypeVariable(): Type & { type: 'typeVariable' } {
 	return { type: 'typeVariable', id: '_t' + typeVariableCount++ }
 }
 
-function inferLet(scope: Scope, definition: { id: string, value: Expression }): Scope {
-	const t = applySubstitutions(substitutions, inferExpression(scope, definition.value))
-	const typeVariables = typeVariablesInType(t)
-	for (const { type } of Object.values(scope)) {
-		for (const v of typeVariablesInType(applySubstitutions(substitutions, type))) {
-			typeVariables.delete(v)
+function inferLet(scope: Scope, definitionGroups: DefinitionGroup[]): Scope {
+	scope = { ...scope }
+	const result: Scope = {}
+	for (const definitionGroup of definitionGroups) {
+		const newScope: Scope = { ...scope }
+		for (const id in definitionGroup) {
+			newScope[id] = typeTemplateFromType(newTypeVariable())
+		}
+
+		for (const id in definitionGroup) {
+			unify(newScope[id].type, inferExpression(newScope, definitionGroup[id]))
+		}
+
+		const types: Record<string, Type> = {}
+		for (const id in definitionGroup) {
+			types[id] = applySubstitutions(substitutions, newScope[id].type)
+		}
+		const gs = new Set<string>
+		for (const type of Object.values(types)) {
+			for (const g of typeVariablesInType(type)) {
+				gs.add(g)
+			}
+		}
+		for (const typeTemplate of Object.values(scope)) {
+			for (const f of typeVariablesInType(applySubstitutions(substitutions, typeTemplate.type))) {
+				gs.delete(f)
+			}
+		}
+		for (const id in definitionGroup) {
+			scope[id] = result[id] = typeTemplateFromType(types[id], gs)
 		}
 	}
-	return { [definition.id]: typeTemplateFromType(t, typeVariables) }
+	return result
 }
 
 function inferProgram(scope: Scope, expression: Expression): Type {
@@ -307,10 +333,9 @@ assert.throws(
 assert.deepStrictEqual(
 	inferProgram(std, {
 		type: 'let',
-		definition: {
-			id: 'a',
-			value: { type: 'literal', value: { type: 'int', value: 10 } },
-		},
+		definitionGroups: [{
+			a: literal(10),
+		}],
 		value: call('cons',
 			{ type: 'variable', id: 'a' },
 			call('cons',
@@ -326,10 +351,10 @@ assert.deepStrictEqual(
 assert.deepStrictEqual(
 	inferProgram(std, {
 		type: 'let',
-		definition: { id: 'a', value: { type: 'literal', value: { type: 'string', value: 'foo' } } },
+		definitionGroups: [{ a: literal('foo') }],
 		value: {
 			type: 'let',
-			definition: { id: 'a', value: { type: 'literal', value: { type: 'int', value: 10 } } },
+			definitionGroups: [{ a: literal(10) }],
 			value: plus({ type: 'variable', id: 'a' }, { type: 'variable', id: 'a' }),
 		},
 	}),
@@ -409,11 +434,11 @@ assert.deepStrictEqual(
 		parameter: 'a',
 		body: {
 			type: 'let',
-			definition: { id: 'b', value: { type: 'variable', id: 'a' } },
+			definitionGroups: [{ b: { type: 'variable', id: 'a' } }],
 			value: { type: 'variable', id: 'b' },
 		},
 	}),
-	functionType(lastTypeVariable(), lastTypeVariable()),
+	functionType(lastTypeVariable(2), lastTypeVariable(2)),
 )
 
 // (\a -> let b = a in b + b)
@@ -423,7 +448,7 @@ assert.deepStrictEqual(
 		parameter: 'a',
 		body: {
 			type: 'let',
-			definition: { id: 'b', value: { type: 'variable', id: 'a' } },
+			definitionGroups: [{ b: { type: 'variable', id: 'a' } }],
 			value: plus({ type: 'variable', id: 'b' }, { type: 'variable', id: 'b' }),
 		},
 	}),
@@ -434,7 +459,7 @@ assert.deepStrictEqual(
 assert.deepStrictEqual(
 	inferProgram(std, {
 		type: 'let',
-		definition: { id: 'a', value: { type: 'literal', value: { type: 'int', value: 123 } } },
+		definitionGroups: [{ a: literal(123) }],
 		value: {
 			type: 'function',
 			parameter: 'x',
@@ -472,14 +497,13 @@ assert.throws(
 assert.deepStrictEqual(
 	inferProgram(std, {
 		type: 'let',
-		definition: {
-			id: 'identity',
-			value: {
+		definitionGroups: [{
+			identity: {
 				type: 'function',
 				parameter: 'x',
 				body: { type: 'variable', id: 'x' },
 			},
-		},
+		}],
 		value: call('identity', literal('foo')),
 	}),
 	builtinTypes.string,
@@ -492,14 +516,13 @@ assert.deepStrictEqual(
 		parameter: 's',
 		body: {
 			type: 'let',
-			definition: {
-				id: 'identity',
-				value: {
+			definitionGroups: [{
+				identity: {
 					type: 'function',
 					parameter: 'x',
 					body: { type: 'variable', id: 'x' },
 				},
-			},
+			}],
 			value: call('++', literal('foo'), call('identity', { type: 'variable', id: 's' })),
 		},
 	}),
@@ -513,14 +536,13 @@ assert.deepStrictEqual(
 		parameter: 'a',
 		body: {
 			type: 'let',
-			definition: {
-				id: 'identity',
-				value: {
+			definitionGroups: [{
+				identity: {
 					type: 'function',
 					parameter: 'x',
 					body: { type: 'variable', id: 'x' },
 				},
-			},
+			}],
 			value: call('identity', { type: 'variable', id: 'a' }),
 		},
 	}),
@@ -541,14 +563,13 @@ assert.throws(
 assert.deepStrictEqual(
 	inferProgram(std, {
 		type: 'let',
-		definition: {
-			id: 'identity',
-			value: {
+		definitionGroups: [{
+			identity: {
 				type: 'function',
 				parameter: 'x',
 				body: { type: 'variable', id: 'x' },
 			},
-		},
+		}],
 		value: {
 			type: 'call',
 			callee: { type: 'variable', id: 'identity' },
@@ -559,13 +580,11 @@ assert.deepStrictEqual(
 )
 
 // let foo = (\a -> foo a) in foo "x"
-// letrec required
-if (0) assert.deepStrictEqual(
+assert.deepStrictEqual(
 	inferProgram(std, {
 		type: 'let',
-		definition: {
-			id: 'foo',
-			value: {
+		definitionGroups: [{
+			foo: {
 				type: 'function',
 				parameter: 'a',
 				body: {
@@ -574,26 +593,83 @@ if (0) assert.deepStrictEqual(
 					argument: { type: 'variable', id: 'a' },
 				},
 			},
-		},
+		}],
 		value: {
 			type: 'call',
 			callee: { type: 'variable', id: 'foo' },
 			argument: { type: 'literal', value: { type: 'string', value: 'x' } },
 		},
 	}),
-	lastTypeVariable(),
+	lastTypeVariable(2),
 )
 
 // let bar = bar in bar
-// letrec required
-if (0) assert.deepStrictEqual(
+assert.deepStrictEqual(
 	inferProgram(std, {
 		type: 'let',
-		definition: {
-			id: 'bar',
-			value: { type: 'variable', id: 'bar' },
-		},
+		definitionGroups: [{
+			bar: { type: 'variable', id: 'bar' },
+		}],
 		value: { type: 'variable', id: 'bar' },
 	}),
 	lastTypeVariable(),
+)
+
+// let f x = 2 + f (x + 1) in f
+assert.deepStrictEqual(
+	inferProgram(std, {
+		type: 'let',
+		definitionGroups: [{
+			f: {
+				type: 'function',
+				parameter: 'x',
+				body: plus(literal(2), call('f', plus({ type: 'variable', id: 'x' }, literal(1)))),
+			},
+		}],
+		value: { type: 'variable', id: 'f' },
+	}),
+	functionType(builtinTypes.int, builtinTypes.int),
+)
+
+// let f x = 2 + g x; g x = f (x + 1) in (f, g)
+assert.deepStrictEqual(
+	inferProgram(std, {
+		type: 'let',
+		definitionGroups: [{
+			f: {
+				type: 'function',
+				parameter: 'x',
+				body: plus(literal(2), call('g', { type: 'variable', id: 'x' })),
+			},
+			g: {
+				type: 'function',
+				parameter: 'x',
+				body: call('f', plus({ type: 'variable', id: 'x' }, literal(1))),
+			},
+		}],
+		value: call(',', { type: 'variable', id: 'f' }, { type: 'variable', id: 'g' }),
+	}),
+	pairType(functionType(builtinTypes.int, builtinTypes.int), functionType(builtinTypes.int, builtinTypes.int)),
+)
+
+// let identity x = x; foo n = identity identity n in foo identity
+assert.deepStrictEqual(
+	inferProgram(std, {
+		type: 'let',
+		definitionGroups: [{
+			identity: {
+				type: 'function',
+				parameter: 'x',
+				body: { type: 'variable', id: 'x' },
+			},
+		}, {
+			foo: {
+				type: 'function',
+				parameter: 'n',
+				body: call('identity', { type: 'variable', id: 'identity' }, { type: 'variable', id: 'n' }),
+			},
+		}],
+		value: call('foo', { type: 'variable', id: 'identity' }),
+	}),
+	functionType(lastTypeVariable(2), lastTypeVariable(2)),
 )
