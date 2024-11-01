@@ -3,7 +3,7 @@
 type Literal =
 	| { type: 'int', value: number }
 	| { type: 'char', value: string }
-	| { type: 'rational', value: { numerator: number, denominator: number } }
+	| { type: 'rational', value: number }
 	| { type: 'string', value: string }
 
 type Expression =
@@ -265,12 +265,33 @@ function typeVariablesInType(type: Type): Set<string> {
 import assert from 'node:assert'
 
 const T = newTypeVariable()
+const T2 = newTypeVariable()
 const std = {
 	'+': typeTemplateFromType(functionType(builtinTypes.int, functionType(builtinTypes.int, builtinTypes.int))),
 	'++': typeTemplateFromType(functionType(builtinTypes.string, functionType(builtinTypes.string, builtinTypes.string))),
 	cons: typeTemplateFromType(functionType(T, functionType(listType(T), listType(T))), [T.id]),
 	nil: typeTemplateFromType(listType(T), [T.id]),
+	',': typeTemplateFromType(functionType(T, functionType(T2, pairType(T, T2))), [T.id, T2.id]),
 } satisfies Scope
+
+function literal(x: string | number): Expression {
+	return {
+		type: 'literal',
+		value: typeof x === 'number' ? { type: Number.isInteger(x) ? 'int' : 'rational', value: x }
+			: { type: x.length === 1 ? 'char' : 'string', value: x }
+	}
+}
+
+function call(callee: Expression | string, ...args: Expression[]): Expression {
+	return args.reduce(
+		(callee, argument) => ({ type: 'call', callee, argument }),
+		typeof callee === 'string' ? { type: 'variable', id: callee } : callee
+	)
+}
+
+function plus(x: Expression, y: Expression): Expression {
+	return call('+', x, y)
+}
 
 function lastTypeVariable(n = 1): Type & { type: 'typeVariable' } {
 	return { type: 'typeVariable', id: '_t' + (typeVariableCount - n) }
@@ -290,23 +311,13 @@ assert.deepStrictEqual(
 			id: 'a',
 			value: { type: 'literal', value: { type: 'int', value: 10 } },
 		},
-		value: { // (cons a) ((cons a) nil)
-			type: 'call',
-			callee: {
-				type: 'call',
-				callee: { type: 'variable', id: 'cons' },
-				argument: { type: 'variable', id: 'a' },
-			},
-			argument: {
-				type: 'call',
-				callee: {
-					type: 'call',
-					callee: { type: 'variable', id: 'cons' },
-					argument: { type: 'variable', id: 'a' },
-				},
-				argument: { type: 'variable', id: 'nil' },
-			},
-		},
+		value: call('cons',
+			{ type: 'variable', id: 'a' },
+			call('cons',
+				{ type: 'variable', id: 'a' },
+				{ type: 'variable', id: 'nil' },
+			),
+		),
 	}),
 	listType(builtinTypes.int),
 )
@@ -319,16 +330,8 @@ assert.deepStrictEqual(
 		value: {
 			type: 'let',
 			definition: { id: 'a', value: { type: 'literal', value: { type: 'int', value: 10 } } },
-			value: {
-				type: 'call',
-				callee: {
-					type: 'call',
-					callee: { type: 'variable', id: '+' },
-					argument: { type: 'variable', id: 'a' },
-				},
-				argument: { type: 'variable', id: 'a' },
-			}
-		}
+			value: plus({ type: 'variable', id: 'a' }, { type: 'variable', id: 'a' }),
+		},
 	}),
 	builtinTypes.int,
 )
@@ -338,7 +341,7 @@ assert.deepStrictEqual(
 	inferProgram(std, {
 		type: 'function',
 		parameter: 'x',
-		body: { type: 'literal', value: { type: 'char', value: 'q' } },
+		body: literal('q'),
 	}),
 	functionType(lastTypeVariable(), builtinTypes.char),
 )
@@ -358,15 +361,7 @@ assert.deepStrictEqual(
 	inferProgram(std, {
 		type: 'function',
 		parameter: 'x',
-		body: {
-			type: 'call',
-			callee: {
-				type: 'call',
-				callee: { type: 'variable', id: '+' },
-				argument: { type: 'variable', id: 'x' },
-			},
-			argument: { type: 'variable', id: 'x' },
-		},
+		body: plus({ type: 'variable', id: 'x' }, { type: 'variable', id: 'x' }),
 	}),
 	functionType(builtinTypes.int, builtinTypes.int),
 )
@@ -376,19 +371,7 @@ assert.throws(
 	() => inferProgram(std, {
 		type: 'function',
 		parameter: 'x',
-		body: {
-			type: 'call',
-			callee: {
-				type: 'call',
-				callee: { type: 'variable', id: '+' },
-				argument: {
-					type: 'call',
-					callee: { type: 'variable', id: 'x' },
-					argument: { type: 'literal', value: { type: 'int', value: 123 } },
-				},
-			},
-			argument: { type: 'variable', id: 'x' },
-		},
+		body: plus(call('x', literal(123)), { type: 'variable', id: 'x' }),
 	}),
 	/match/,
 )
@@ -398,11 +381,7 @@ assert.deepStrictEqual(
 	inferProgram(std, {
 		type: 'function',
 		parameter: 'foo',
-		body: {
-			type: 'call',
-			callee: { type: 'variable', id: 'foo' },
-			argument: { type: 'literal', value: { type: 'int', value: 123 } },
-		},
+		body: call('foo', literal(123)),
 	}),
 	functionType(
 		functionType(builtinTypes.int, lastTypeVariable()),
@@ -415,23 +394,7 @@ assert.deepStrictEqual(
 	inferProgram(std, {
 		type: 'function',
 		parameter: 'foo',
-		body: {
-			type: 'call',
-			callee: {
-				type: 'call',
-				callee: { type: 'variable', id: '+' },
-				argument: {
-					type: 'call',
-					callee: { type: 'variable', id: 'foo' },
-					argument: { type: 'literal', value: { type: 'int', value: 1 } },
-				},
-			},
-			argument: {
-				type: 'call',
-				callee: { type: 'variable', id: 'foo' },
-				argument: { type: 'literal', value: { type: 'int', value: 2 } },
-			},
-		},
+		body: plus(call('foo', literal(1)), call('foo', literal(2))),
 	}),
 	functionType(
 		functionType(builtinTypes.int, builtinTypes.int),
@@ -461,15 +424,7 @@ assert.deepStrictEqual(
 		body: {
 			type: 'let',
 			definition: { id: 'b', value: { type: 'variable', id: 'a' } },
-			value: {
-				type: 'call',
-				callee: {
-					type: 'call',
-					callee: { type: 'variable', id: '+' },
-					argument: { type: 'variable', id: 'b' },
-				},
-				argument: { type: 'variable', id: 'b' },
-			},
+			value: plus({ type: 'variable', id: 'b' }, { type: 'variable', id: 'b' }),
 		},
 	}),
 	functionType(builtinTypes.int, builtinTypes.int),
@@ -493,8 +448,8 @@ assert.deepStrictEqual(
 assert.throws(
 	() => inferProgram(std, {
 		type: 'call',
-		callee: { type: 'literal', value: { type: 'int', value: 123 } },
-		argument: { type: 'literal', value: { type: 'string', value: 'foo' } },
+		callee: literal(123),
+		argument: literal('foo'),
 	}),
 	/match/,
 )
@@ -506,17 +461,9 @@ assert.throws(
 		callee: {
 			type: 'function',
 			parameter: 's',
-			body: {
-				type: 'call',
-				callee: {
-					type: 'call',
-					callee: { type: 'variable', id: '++' },
-					argument: { type: 'literal', value: { type: 'string', value: 's is : ' } },
-				},
-				argument: { type: 'variable', id: 's' },
-			},
+			body: call('++', literal('s is : '), { type: 'variable', id: 's' }),
 		},
-		argument: { type: 'literal', value: { type: 'int', value: 99 } },
+		argument: literal(99),
 	}),
 	/match/,
 )
@@ -533,11 +480,7 @@ assert.deepStrictEqual(
 				body: { type: 'variable', id: 'x' },
 			},
 		},
-		value: {
-			type: 'call',
-			callee: { type: 'variable', id: 'identity' },
-			argument: { type: 'literal', value: { type: 'string', value: 'foo' } },
-		}
+		value: call('identity', literal('foo')),
 	}),
 	builtinTypes.string,
 )
@@ -557,19 +500,7 @@ assert.deepStrictEqual(
 					body: { type: 'variable', id: 'x' },
 				},
 			},
-			value: {
-				type: 'call',
-				callee: {
-					type: 'call',
-					callee: { type: 'variable', id: '++' },
-					argument: { type: 'literal', value: { type: 'string', value: 'foo' } },
-				},
-				argument: {
-					type: 'call',
-					callee: { type: 'variable', id: 'identity' },
-					argument: { type: 'variable', id: 's' },
-				},
-			},
+			value: call('++', literal('foo'), call('identity', { type: 'variable', id: 's' })),
 		},
 	}),
 	functionType(builtinTypes.string, builtinTypes.string),
@@ -590,11 +521,7 @@ assert.deepStrictEqual(
 					body: { type: 'variable', id: 'x' },
 				},
 			},
-			value: {
-				type: 'call',
-				callee: { type: 'variable', id: 'identity' },
-				argument: { type: 'variable', id: 'a' },
-			},
+			value: call('identity', { type: 'variable', id: 'a' }),
 		},
 	}),
 	functionType(lastTypeVariable(2), lastTypeVariable(2)),
@@ -605,11 +532,7 @@ assert.throws(
 	() => inferProgram(std, {
 		type: 'function',
 		parameter: 'f',
-		body: {
-			type: 'call',
-			callee: { type: 'variable', id: 'f' },
-			argument: { type: 'variable', id: 'f' },
-		},
+		body: call({ type: 'variable', id: 'f' }, { type: 'variable', id: 'f' }),
 	}),
 	/infinite/,
 )
