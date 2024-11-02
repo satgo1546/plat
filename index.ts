@@ -1,3 +1,5 @@
+import assert from 'node:assert'
+
 // 2
 
 type Literal =
@@ -7,7 +9,7 @@ type Literal =
 	| { type: 'string', value: string }
 
 type DefinitionGroups = {
-	annotated: Record<string, { type: TypeTemplate, value: Expression }>,
+	annotated: Record<string, { typeTemplate: TypeTemplate, value: Expression }>,
 	inferred: Record<string, Expression>[],
 }
 
@@ -171,6 +173,9 @@ function newTypeVariable(): Type & { type: 'typeVariable' } {
 function inferLet(scope: Scope, definitionGroups: DefinitionGroups): Scope {
 	scope = { ...scope }
 	const result: Scope = {}
+	for (const id in definitionGroups.annotated) {
+		scope[id] = result[id] = definitionGroups.annotated[id].typeTemplate
+	}
 	for (const definitionGroup of definitionGroups.inferred) {
 		const newScope: Scope = { ...scope }
 		for (const id in definitionGroup) {
@@ -199,6 +204,22 @@ function inferLet(scope: Scope, definitionGroups: DefinitionGroups): Scope {
 		for (const id in definitionGroup) {
 			scope[id] = result[id] = typeTemplateFromType(types[id], gs)
 		}
+	}
+	for (const id in definitionGroups.annotated) {
+		const { typeTemplate, value } = definitionGroups.annotated[id]
+		const type = instantiateTypeTemplate(typeTemplate)
+		unify(type, inferExpression(scope, value))
+
+		const newType = applySubstitutions(substitutions, type)
+		const gs = typeVariablesInType(newType)
+		for (const typeTemplate of Object.values(scope)) {
+			for (const f of typeVariablesInType(applySubstitutions(substitutions, typeTemplate.type))) {
+				gs.delete(f)
+			}
+		}
+
+		const newTypeTemplate = typeTemplateFromType(newType, gs)
+		assert.deepStrictEqual(typeTemplate, newTypeTemplate, 'signature too general')
 	}
 	return result
 }
@@ -290,9 +311,6 @@ function typeVariablesInType(type: Type): Set<string> {
 }
 
 // 3
-
-import assert from 'node:assert'
-
 const T = newTypeVariable()
 const T2 = newTypeVariable()
 const std = {
@@ -328,7 +346,7 @@ function letrec(...args:
 	| [DefinitionGroups['annotated'], ...DefinitionGroups['inferred'], Expression]
 ): Expression {
 	const value = args.pop() as Expression
-	const inferred = args.splice(+(typeof Object.values(args[0])[0].type === 'object')) as DefinitionGroups['inferred']
+	const inferred = args.splice(+!!Object.values(args[0])[0].typeTemplate) as DefinitionGroups['inferred']
 	const annotated = args[0] as DefinitionGroups['annotated']
 	return { type: 'let', definitionGroups: { annotated: annotated ?? {}, inferred }, value }
 }
@@ -665,4 +683,76 @@ assert.deepStrictEqual(
 		call('foo', { type: 'variable', id: 'identity' }),
 	)),
 	functionType(lastTypeVariable(2), lastTypeVariable(2)),
+)
+
+// let (f :: a -> a) = \x -> x + 1 in f
+assert.throws(
+	() => inferProgram(std, letrec(
+		{
+			f: {
+				typeTemplate: { // a -> a
+					parameterCount: 1,
+					type: functionType(
+						{ type: 'typeTemplateParameter', id: 0 },
+						{ type: 'typeTemplateParameter', id: 0 },
+					),
+				},
+				value: {
+					type: 'function',
+					parameter: 'x',
+					body: plus({ type: 'variable', id: 'x' }, literal(1)),
+				},
+			},
+		},
+		{ type: 'variable', id: 'f' },
+	)),
+	/too general/,
+)
+
+// let
+//   a x = [b x];
+//   (b :: a -> a) y = let foo = c 'c' in y;
+//   c z = "foo" ++ a z
+// in a
+assert.deepStrictEqual(
+	inferProgram(std, letrec(
+		{
+			b: {
+				typeTemplate: { // a -> a
+					parameterCount: 1,
+					type: functionType(
+						{ type: 'typeTemplateParameter', id: 0 },
+						{ type: 'typeTemplateParameter', id: 0 },
+					),
+				},
+				value: {
+					type: 'function',
+					parameter: 'y',
+					body: letrec(
+						{ foo: call('c', literal('c')) },
+						{ type: 'variable', id: 'y' },
+					),
+				},
+			},
+		},
+		{
+			a: {
+				type: 'function',
+				parameter: 'x',
+				body: call('cons',
+					call('b', { type: 'variable', id: 'x' }),
+					{ type: 'variable', id: 'nil' },
+				),
+			},
+		},
+		{
+			c: {
+				type: 'function',
+				parameter: 'z',
+				body: call('++', literal('foo'), call('a', { type: 'variable', id: 'z' })),
+			},
+		},
+		{ type: 'variable', id: 'a' },
+	)),
+	functionType(lastTypeVariable(), listType(lastTypeVariable())),
 )
