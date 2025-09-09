@@ -1,56 +1,41 @@
-import assert from 'node:assert'
+export type Expression =
+	| { tag: 'variable', name: string }
+	| {
+		tag: 'literal', value:
+		| { tag: 'int', value: number }
+		| { tag: 'char', value: string }
+		| { tag: 'float', value: number }
+		| { tag: 'string', value: string }
+	}
+	| { tag: 'call', callee: Expression, argument: Expression }
+	| { tag: 'function', parameterName: string, body: Expression }
+	| { tag: 'let', variableName: string, variableValue: Expression, body: Expression }
 
-// 2
+export type Type =
+	| { tag: 'namedType', name: string }
+	| { tag: 'reify', generic: Type, argument: Type }
+	| { tag: 'typeVariable', link?: Type, name: string, quantified: boolean }
 
-type Literal =
-	| { type: 'int', value: number }
-	| { type: 'char', value: string }
-	| { type: 'rational', value: number }
-	| { type: 'string', value: string }
-
-type DefinitionGroups = {
-	annotated: Record<string, { typeTemplate: TypeTemplate, value: Expression }>,
-	inferred: Record<string, Expression>[],
-}
-
-type Expression =
-	| { type: 'variable', id: string }
-	| { type: 'literal', value: Literal }
-	| { type: 'constructor', assumption: { id: string, type: Scope[string] } }
-	| { type: 'call', callee: Expression, argument: Expression }
-	| { type: 'function', parameter: string, body: Expression }
-	| { type: 'let', definitionGroups: DefinitionGroups, value: Expression }
-
-// 5
-
-type Type =
-	| { type: 'namedType', id: string }
-	| { type: 'typeVariable', id: string }
-	| { type: 'instantiation', generic: Type, argument: Type }
-	| { type: 'typeTemplateParameter', id: number }
-
-const builtinTypes = {
-	null: { type: 'namedType', id: 'null' },
-	char: { type: 'namedType', id: 'char' },
-	int: { type: 'namedType', id: 'int' },
-	bigint: { type: 'namedType', id: 'bigint' },
-	float: { type: 'namedType', id: 'float' },
-	double: { type: 'namedType', id: 'double' },
-	list: { type: 'namedType', id: 'list' },
+export const builtinTypes = {
+	null: { tag: 'namedType', name: 'null' },
+	int: { tag: 'namedType', name: 'int' },
+	char: { tag: 'namedType', name: 'char' },
+	float: { tag: 'namedType', name: 'float' },
+	list: { tag: 'namedType', name: 'list' },
 	string: {
-		type: 'instantiation',
-		generic: { type: 'namedType', id: 'list' },
-		argument: { type: 'namedType', id: 'char' },
+		tag: 'reify',
+		generic: { tag: 'namedType', name: 'list' },
+		argument: { tag: 'namedType', name: 'char' },
 	},
-	function: { type: 'namedType', id: 'function' },
-	pair: { type: 'namedType', id: 'pair' },
+	function: { tag: 'namedType', name: 'function' },
+	pair: { tag: 'namedType', name: 'pair' },
 } satisfies Record<string, Type>
 
-function functionType(parameter: Type, result: Type): Type {
+export function functionType(parameter: Type, result: Type): Type {
 	return {
-		type: 'instantiation',
+		tag: 'reify',
 		generic: {
-			type: 'instantiation',
+			tag: 'reify',
 			generic: builtinTypes.function,
 			argument: parameter,
 		},
@@ -58,701 +43,100 @@ function functionType(parameter: Type, result: Type): Type {
 	}
 }
 
-function listType(element: Type): Type {
-	return {
-		type: 'instantiation',
-		generic: builtinTypes.list,
-		argument: element,
+export function newTypeVariable(): Type & { tag: 'typeVariable' } {
+	return { tag: 'typeVariable', name: crypto.randomUUID(), quantified: false }
+}
+
+function find(type: Type): Type {
+	if (type.tag === 'typeVariable' && type.link) {
+		return type.link = find(type.link)
+	}
+	return type
+}
+
+function occurs(type: Type, typeVariable: Type & { tag: 'typeVariable' }): boolean {
+	type = find(type)
+	switch (type.tag) {
+		case 'namedType':
+			return false
+		case 'reify':
+			return occurs(type.generic, typeVariable) || occurs(type.argument, typeVariable)
+		case 'typeVariable':
+			return type.name === typeVariable.name
 	}
 }
 
-function pairType(left: Type, right: Type): Type {
-	return {
-		type: 'instantiation',
-		generic: {
-			type: 'instantiation',
-			generic: builtinTypes.pair,
-			argument: left,
-		},
-		argument: right,
-	}
-}
-
-type TypeTemplate = {
-	parameterCount: number,
-	type: Type,
-}
-
-function typeTemplateFromType(type: Type, typeVariablesToGeneralize?: Iterable<string>): TypeTemplate {
-	if (typeVariablesToGeneralize) {
-		const s: Substitutions = {}
-		let count = 0
-		const typeVariables = typeVariablesInType(type)
-		for (const v of typeVariablesToGeneralize) {
-			if (typeVariables.has(v)) {
-				s[v] = { type: 'typeTemplateParameter', id: count++ }
-			}
-		}
-		return {
-			parameterCount: count,
-			type: applySubstitutions(s, type)
-		}
+function unify(a: Type, b: Type): void {
+	a = find(a)
+	b = find(b)
+	if (a.tag === 'typeVariable') {
+		if (occurs(b, a)) throw new Error('infinite type')
+		a.link = b
+	} else if (b.tag === 'typeVariable') {
+		unify(b, a)
+	} else if (a.tag === 'namedType' && b.tag === 'namedType' && a.name === b.name) {
+		// nothing to do
+	} else if (a.tag === 'reify' && b.tag === 'reify') {
+		unify(a.generic, b.generic)
+		unify(a.argument, b.argument)
 	} else {
-		return {
-			parameterCount: 0,
-			type,
-		}
+		throw new Error('type mismatch')
 	}
 }
 
-function instantiateTypeTemplate(typeTemplate: TypeTemplate): Type {
-	const typeVariables = Array.from({ length: typeTemplate.parameterCount }, newTypeVariable)
-	return (function instantiate(type: Type): Type {
-		switch (type.type) {
-			case 'instantiation':
-				return {
-					type: 'instantiation',
-					generic: instantiate(type.generic),
-					argument: instantiate(type.argument),
-				}
-			case 'typeTemplateParameter':
-				return typeVariables[type.id]
-			default:
-				return type
-		}
-	})(typeTemplate.type)
-}
-
-// 6
-
-type Scope = Record<string, TypeTemplate>
+export type Scope = Record<string, Type>
 
 function inferExpression(scope: Scope, expression: Expression): Type {
-	switch (expression.type) {
+	switch (expression.tag) {
 		case 'variable':
-			if (Object.hasOwn(scope, expression.id)) {
-				return instantiateTypeTemplate(scope[expression.id])
+			if (Object.hasOwn(scope, expression.name)) {
+				return scope[expression.name]
 			} else {
-				throw new Error(`undefined variable '${expression.id}'`)
+				throw new Error(`undefined variable '${expression.name}'`)
 			}
 		case 'literal':
 			return {
 				char: builtinTypes.char,
 				int: builtinTypes.int,
 				string: builtinTypes.string,
-				rational: builtinTypes.float,
-			}[expression.value.type]
-		case 'constructor':
-			return instantiateTypeTemplate(expression.assumption.type)
+				float: builtinTypes.float,
+			}[expression.value.tag]
 		case 'call':
-			const calleeType = inferExpression(scope, expression.callee)
-			const argumentType = inferExpression(scope, expression.argument)
 			const resultType = newTypeVariable()
-			unify(functionType(argumentType, resultType), calleeType)
+			unify(
+				inferExpression(scope, expression.callee),
+				functionType(inferExpression(scope, expression.argument), resultType),
+			)
 			return resultType
 		case 'function':
 			const parameterType = newTypeVariable()
-			const bodyType = inferExpression({
+			return functionType(parameterType, inferExpression({
 				...scope,
-				[expression.parameter]: typeTemplateFromType(parameterType),
-			}, expression.body)
-			return functionType(parameterType, bodyType)
+				[expression.parameterName]: parameterType,
+			}, expression.body))
 		case 'let':
 			return inferExpression({
 				...scope,
-				...inferLet(scope, expression.definitionGroups),
-			}, expression.value)
+				[expression.variableName]: inferExpression(scope, expression.variableValue),
+			}, expression.body)
 	}
 }
 
-let typeVariableCount = 0
-function newTypeVariable(): Type & { type: 'typeVariable' } {
-	return { type: 'typeVariable', id: '_t' + typeVariableCount++ }
-}
-
-function inferLet(scope: Scope, definitionGroups: DefinitionGroups): Scope {
-	scope = { ...scope }
-	const result: Scope = {}
-	for (const id in definitionGroups.annotated) {
-		scope[id] = result[id] = definitionGroups.annotated[id].typeTemplate
-	}
-	for (const definitionGroup of definitionGroups.inferred) {
-		const newScope: Scope = { ...scope }
-		for (const id in definitionGroup) {
-			newScope[id] = typeTemplateFromType(newTypeVariable())
-		}
-
-		for (const id in definitionGroup) {
-			unify(newScope[id].type, inferExpression(newScope, definitionGroup[id]))
-		}
-
-		const types: Record<string, Type> = {}
-		for (const id in definitionGroup) {
-			types[id] = applySubstitutions(substitutions, newScope[id].type)
-		}
-		const gs = new Set<string>
-		for (const type of Object.values(types)) {
-			for (const g of typeVariablesInType(type)) {
-				gs.add(g)
-			}
-		}
-		for (const typeTemplate of Object.values(scope)) {
-			for (const f of typeVariablesInType(applySubstitutions(substitutions, typeTemplate.type))) {
-				gs.delete(f)
-			}
-		}
-		for (const id in definitionGroup) {
-			scope[id] = result[id] = typeTemplateFromType(types[id], gs)
-		}
-	}
-	for (const id in definitionGroups.annotated) {
-		const { typeTemplate, value } = definitionGroups.annotated[id]
-		const type = instantiateTypeTemplate(typeTemplate)
-		unify(type, inferExpression(scope, value))
-
-		const newType = applySubstitutions(substitutions, type)
-		const gs = typeVariablesInType(newType)
-		for (const typeTemplate of Object.values(scope)) {
-			for (const f of typeVariablesInType(applySubstitutions(substitutions, typeTemplate.type))) {
-				gs.delete(f)
-			}
-		}
-
-		const newTypeTemplate = typeTemplateFromType(newType, gs)
-		assert.deepStrictEqual(typeTemplate, newTypeTemplate, 'signature too general')
-	}
-	return result
-}
-
-function inferProgram(scope: Scope, expression: Expression): Type {
-	substitutions = {}
-	const t = inferExpression(scope, expression)
-	return applySubstitutions(substitutions, t)
-}
-
-// 7
-
-type Substitutions = Record<string, Type>
-
-function applySubstitutions(substitutions: Substitutions, type: Type): Type {
-	switch (type.type) {
-		case 'typeVariable':
-			return substitutions[type.id] ?? type
-		case 'instantiation':
-			return {
-				type: 'instantiation',
-				generic: applySubstitutions(substitutions, type.generic),
-				argument: applySubstitutions(substitutions, type.argument),
-			}
-		default:
+function recursiveFind(type: Type): Type {
+	switch (type.tag) {
+		case 'namedType':
 			return type
-	}
-}
-
-function composeSubstitutions(sNew: Substitutions, sOld: Substitutions): Substitutions {
-	const result = { ...sOld }
-	for (const key in result) {
-		result[key] = applySubstitutions(sNew, result[key])
-	}
-	Object.assign(result, sNew)
-	return result
-}
-
-let substitutions: Substitutions = {}
-function extendSubstitutions(s: Substitutions): void {
-	substitutions = composeSubstitutions(s, substitutions)
-}
-
-// 8
-
-function mostGeneralUnifier(left: Type, right: Type): Substitutions {
-	if (left.type === 'instantiation' && right.type === 'instantiation') {
-		const s1 = mostGeneralUnifier(left.generic, right.generic)
-		const s2 = mostGeneralUnifier(applySubstitutions(s1, left.argument), applySubstitutions(s1, right.argument))
-		return composeSubstitutions(s2, s1)
-	} else if (left.type === 'typeVariable') {
-		if (right.type === 'typeVariable' && left.id === right.id) {
-			return {}
-		} else if (typeVariablesInType(right).has(left.id)) {
-			throw new Error('infinite type')
-		} else {
-			return { [left.id]: right }
-		}
-	} else if (right.type === 'typeVariable') {
-		return mostGeneralUnifier(right, left)
-	} else if (left.type === 'namedType' && right.type === 'namedType' && left.id === right.id) {
-		return {}
-	} else if (left.type === 'typeTemplateParameter' || right.type === 'typeTemplateParameter') {
-		throw new Error('bug')
-	} else {
-		throw new Error('types do not match')
-	}
-}
-
-function unify(type1: Type, type2: Type): void {
-	extendSubstitutions(mostGeneralUnifier(applySubstitutions(substitutions, type1), applySubstitutions(substitutions, type2)))
-}
-
-// 9
-
-function typeVariablesInType(type: Type): Set<string> {
-	switch (type.type) {
-		case 'typeVariable':
-			return new Set([type.id])
-		case 'instantiation':
-			const result = typeVariablesInType(type.generic)
-			for (const v of typeVariablesInType(type.argument)) {
-				result.add(v)
+		case 'reify':
+			return {
+				tag: 'reify',
+				generic: recursiveFind(type.generic),
+				argument: recursiveFind(type.argument),
 			}
-			return result
-		default:
-			return new Set
+		case 'typeVariable':
+			return type.link ? recursiveFind(type.link) : type
 	}
 }
 
-// 3
-const T = newTypeVariable()
-const T2 = newTypeVariable()
-const std = {
-	'+': typeTemplateFromType(functionType(builtinTypes.int, functionType(builtinTypes.int, builtinTypes.int))),
-	'++': typeTemplateFromType(functionType(builtinTypes.string, functionType(builtinTypes.string, builtinTypes.string))),
-	cons: typeTemplateFromType(functionType(T, functionType(listType(T), listType(T))), [T.id]),
-	nil: typeTemplateFromType(listType(T), [T.id]),
-	',': typeTemplateFromType(functionType(T, functionType(T2, pairType(T, T2))), [T.id, T2.id]),
-} satisfies Scope
-
-function literal(x: string | number): Expression {
-	return {
-		type: 'literal',
-		value: typeof x === 'number' ? { type: Number.isInteger(x) ? 'int' : 'rational', value: x }
-			: { type: x.length === 1 ? 'char' : 'string', value: x }
-	}
+export function inferProgram(scope: Scope, expression: Expression): Type {
+	return recursiveFind(inferExpression(scope, expression))
 }
-
-function call(callee: Expression | string, ...args: Expression[]): Expression {
-	return args.reduce(
-		(callee, argument) => ({ type: 'call', callee, argument }),
-		typeof callee === 'string' ? { type: 'variable', id: callee } : callee
-	)
-}
-
-function plus(x: Expression, y: Expression): Expression {
-	return call('+', x, y)
-}
-
-function letrec(...args:
-	| [DefinitionGroups['annotated'], Expression]
-	| [...DefinitionGroups['inferred'], Expression]
-	| [DefinitionGroups['annotated'], ...DefinitionGroups['inferred'], Expression]
-): Expression {
-	const value = args.pop() as Expression
-	const inferred = args.splice(+!!Object.values(args[0])[0].typeTemplate) as DefinitionGroups['inferred']
-	const annotated = args[0] as DefinitionGroups['annotated']
-	return { type: 'let', definitionGroups: { annotated: annotated ?? {}, inferred }, value }
-}
-
-function lastTypeVariable(n = 1): Type & { type: 'typeVariable' } {
-	return { type: 'typeVariable', id: '_t' + (typeVariableCount - n) }
-}
-
-// someUndefinedVariable
-assert.throws(
-	() => inferProgram(std, { type: 'variable', id: 'someUndefinedVariable' }),
-	/undefined/,
-)
-
-// let a = 10 in [a, a]
-assert.deepStrictEqual(
-	inferProgram(std, {
-		type: 'let',
-		definitionGroups: {
-			annotated: {}, inferred: [{
-				a: literal(10),
-			}]
-		},
-		value: call('cons',
-			{ type: 'variable', id: 'a' },
-			call('cons',
-				{ type: 'variable', id: 'a' },
-				{ type: 'variable', id: 'nil' },
-			),
-		),
-	}),
-	listType(builtinTypes.int),
-)
-
-// let a = "foo" in let a = 10 in a + a
-assert.deepStrictEqual(
-	inferProgram(std, letrec(
-		{ a: literal('foo') },
-		letrec(
-			{ a: literal(10) },
-			plus({ type: 'variable', id: 'a' }, { type: 'variable', id: 'a' }),
-		),
-	)),
-	builtinTypes.int,
-)
-
-// (\x -> 'q')
-assert.deepStrictEqual(
-	inferProgram(std, {
-		type: 'function',
-		parameter: 'x',
-		body: literal('q'),
-	}),
-	functionType(lastTypeVariable(), builtinTypes.char),
-)
-
-// (\x -> x)
-assert.deepStrictEqual(
-	inferProgram(std, {
-		type: 'function',
-		parameter: 'x',
-		body: { type: 'variable', id: 'x' },
-	}),
-	functionType(lastTypeVariable(), lastTypeVariable()),
-)
-
-// (\x -> x + x)
-assert.deepStrictEqual(
-	inferProgram(std, {
-		type: 'function',
-		parameter: 'x',
-		body: plus({ type: 'variable', id: 'x' }, { type: 'variable', id: 'x' }),
-	}),
-	functionType(builtinTypes.int, builtinTypes.int),
-)
-
-// (\x -> (x 123) + x)
-assert.throws(
-	() => inferProgram(std, {
-		type: 'function',
-		parameter: 'x',
-		body: plus(call('x', literal(123)), { type: 'variable', id: 'x' }),
-	}),
-	/match/,
-)
-
-// (\foo -> foo 123)
-assert.deepStrictEqual(
-	inferProgram(std, {
-		type: 'function',
-		parameter: 'foo',
-		body: call('foo', literal(123)),
-	}),
-	functionType(
-		functionType(builtinTypes.int, lastTypeVariable()),
-		lastTypeVariable(),
-	),
-)
-
-// (\foo -> foo 1 + foo 2)
-assert.deepStrictEqual(
-	inferProgram(std, {
-		type: 'function',
-		parameter: 'foo',
-		body: plus(call('foo', literal(1)), call('foo', literal(2))),
-	}),
-	functionType(
-		functionType(builtinTypes.int, builtinTypes.int),
-		builtinTypes.int,
-	),
-)
-
-// (\a -> let b = a in b)
-assert.deepStrictEqual(
-	inferProgram(std, {
-		type: 'function',
-		parameter: 'a',
-		body: letrec(
-			{ b: { type: 'variable', id: 'a' } },
-			{ type: 'variable', id: 'b' },
-		),
-	}),
-	functionType(lastTypeVariable(2), lastTypeVariable(2)),
-)
-
-// (\a -> let b = a in b + b)
-assert.deepStrictEqual(
-	inferProgram(std, {
-		type: 'function',
-		parameter: 'a',
-		body: letrec(
-			{ b: { type: 'variable', id: 'a' } },
-			plus({ type: 'variable', id: 'b' }, { type: 'variable', id: 'b' }),
-		),
-	}),
-	functionType(builtinTypes.int, builtinTypes.int),
-)
-
-// let a = 123 in (\x -> a)
-assert.deepStrictEqual(
-	inferProgram(std, letrec(
-		{ a: literal(123) },
-		{
-			type: 'function',
-			parameter: 'x',
-			body: { type: 'variable', id: 'a' },
-		},
-	)),
-	functionType(lastTypeVariable(), builtinTypes.int),
-)
-
-// 123 "foo"
-assert.throws(
-	() => inferProgram(std, {
-		type: 'call',
-		callee: literal(123),
-		argument: literal('foo'),
-	}),
-	/match/,
-)
-
-// (\s -> "s is: " ++ s) 99
-assert.throws(
-	() => inferProgram(std, {
-		type: 'call',
-		callee: {
-			type: 'function',
-			parameter: 's',
-			body: call('++', literal('s is : '), { type: 'variable', id: 's' }),
-		},
-		argument: literal(99),
-	}),
-	/match/,
-)
-
-// let identity = (\x -> x) in identity "foo"
-assert.deepStrictEqual(
-	inferProgram(std, letrec(
-		{
-			identity: {
-				type: 'function',
-				parameter: 'x',
-				body: { type: 'variable', id: 'x' },
-			},
-		},
-		call('identity', literal('foo')),
-	)),
-	builtinTypes.string,
-)
-
-// (\s -> let identity = (\x -> x) in "foo" ++ (identity s))
-assert.deepStrictEqual(
-	inferProgram(std, {
-		type: 'function',
-		parameter: 's',
-		body: letrec(
-			{
-				identity: {
-					type: 'function',
-					parameter: 'x',
-					body: { type: 'variable', id: 'x' },
-				},
-			},
-			call('++', literal('foo'), call('identity', { type: 'variable', id: 's' })),
-		),
-	}),
-	functionType(builtinTypes.string, builtinTypes.string),
-)
-
-// (\a -> let identity = (\x -> x) in identity a)
-assert.deepStrictEqual(
-	inferProgram(std, {
-		type: 'function',
-		parameter: 'a',
-		body: letrec(
-			{
-				identity: {
-					type: 'function',
-					parameter: 'x',
-					body: { type: 'variable', id: 'x' },
-				},
-			},
-			call('identity', { type: 'variable', id: 'a' }),
-		),
-	}),
-	functionType(lastTypeVariable(2), lastTypeVariable(2)),
-)
-
-// (\f -> f f)
-assert.throws(
-	() => inferProgram(std, {
-		type: 'function',
-		parameter: 'f',
-		body: call({ type: 'variable', id: 'f' }, { type: 'variable', id: 'f' }),
-	}),
-	/infinite/,
-)
-
-// let identity = (\x -> x) in identity identity
-assert.deepStrictEqual(
-	inferProgram(std, letrec(
-		{
-			identity: {
-				type: 'function',
-				parameter: 'x',
-				body: { type: 'variable', id: 'x' },
-			},
-		},
-		call('identity', { type: 'variable', id: 'identity' }),
-	)),
-	functionType(lastTypeVariable(2), lastTypeVariable(2)),
-)
-
-// let foo = (\a -> foo a) in foo 'x'
-assert.deepStrictEqual(
-	inferProgram(std, letrec(
-		{
-			foo: {
-				type: 'function',
-				parameter: 'a',
-				body: {
-					type: 'call',
-					callee: { type: 'variable', id: 'foo' },
-					argument: { type: 'variable', id: 'a' },
-				},
-			},
-		},
-		call('foo', literal('x')),
-	)),
-	lastTypeVariable(2),
-)
-
-// let bar = bar in bar
-assert.deepStrictEqual(
-	inferProgram(std, letrec(
-		{
-			bar: { type: 'variable', id: 'bar' },
-		},
-		{ type: 'variable', id: 'bar' },
-	)),
-	lastTypeVariable(),
-)
-
-// let f x = 2 + f (x + 1) in f
-assert.deepStrictEqual(
-	inferProgram(std, letrec({
-		f: {
-			type: 'function',
-			parameter: 'x',
-			body: plus(literal(2), call('f', plus({ type: 'variable', id: 'x' }, literal(1)))),
-		},
-	},
-		{ type: 'variable', id: 'f' },
-	)),
-	functionType(builtinTypes.int, builtinTypes.int),
-)
-
-// let f x = 2 + g x; g x = f (x + 1) in (f, g)
-assert.deepStrictEqual(
-	inferProgram(std, letrec({
-		f: {
-			type: 'function',
-			parameter: 'x',
-			body: plus(literal(2), call('g', { type: 'variable', id: 'x' })),
-		},
-		g: {
-			type: 'function',
-			parameter: 'x',
-			body: call('f', plus({ type: 'variable', id: 'x' }, literal(1))),
-		},
-	},
-		call(',', { type: 'variable', id: 'f' }, { type: 'variable', id: 'g' }),
-	)),
-	pairType(functionType(builtinTypes.int, builtinTypes.int), functionType(builtinTypes.int, builtinTypes.int)),
-)
-
-// let identity x = x; foo n = identity identity n in foo identity
-assert.deepStrictEqual(
-	inferProgram(std, letrec(
-		{
-			identity: {
-				type: 'function',
-				parameter: 'x',
-				body: { type: 'variable', id: 'x' },
-			},
-		},
-		{
-			foo: {
-				type: 'function',
-				parameter: 'n',
-				body: call('identity', { type: 'variable', id: 'identity' }, { type: 'variable', id: 'n' }),
-			},
-		},
-		call('foo', { type: 'variable', id: 'identity' }),
-	)),
-	functionType(lastTypeVariable(2), lastTypeVariable(2)),
-)
-
-// let (f :: a -> a) = \x -> x + 1 in f
-assert.throws(
-	() => inferProgram(std, letrec(
-		{
-			f: {
-				typeTemplate: { // a -> a
-					parameterCount: 1,
-					type: functionType(
-						{ type: 'typeTemplateParameter', id: 0 },
-						{ type: 'typeTemplateParameter', id: 0 },
-					),
-				},
-				value: {
-					type: 'function',
-					parameter: 'x',
-					body: plus({ type: 'variable', id: 'x' }, literal(1)),
-				},
-			},
-		},
-		{ type: 'variable', id: 'f' },
-	)),
-	/too general/,
-)
-
-// let
-//   a x = [b x];
-//   (b :: a -> a) y = let foo = c 'c' in y;
-//   c z = "foo" ++ a z
-// in a
-assert.deepStrictEqual(
-	inferProgram(std, letrec(
-		{
-			b: {
-				typeTemplate: { // a -> a
-					parameterCount: 1,
-					type: functionType(
-						{ type: 'typeTemplateParameter', id: 0 },
-						{ type: 'typeTemplateParameter', id: 0 },
-					),
-				},
-				value: {
-					type: 'function',
-					parameter: 'y',
-					body: letrec(
-						{ foo: call('c', literal('c')) },
-						{ type: 'variable', id: 'y' },
-					),
-				},
-			},
-		},
-		{
-			a: {
-				type: 'function',
-				parameter: 'x',
-				body: call('cons',
-					call('b', { type: 'variable', id: 'x' }),
-					{ type: 'variable', id: 'nil' },
-				),
-			},
-		},
-		{
-			c: {
-				type: 'function',
-				parameter: 'z',
-				body: call('++', literal('foo'), call('a', { type: 'variable', id: 'z' })),
-			},
-		},
-		{ type: 'variable', id: 'a' },
-	)),
-	functionType(lastTypeVariable(), listType(lastTypeVariable())),
-)
