@@ -22,8 +22,8 @@ function pairType(left: Type, right: Type): Type {
 	}
 }
 
-const T = newTypeVariable()
-const T2 = newTypeVariable()
+const T: Type = { tag: 'typeVariable', name: 'T', level: Infinity }
+const T2: Type = { tag: 'typeVariable', name: 'T2', level: Infinity }
 const std = {
 	'+': functionType(builtinTypes.int, functionType(builtinTypes.int, builtinTypes.int)),
 	'++': functionType(builtinTypes.string, functionType(builtinTypes.string, builtinTypes.string)),
@@ -49,7 +49,7 @@ function makeCallable(x: Expression): CallableExpression {
 		// @ts-ignore
 		args.reduce((callee, x) => ({ tag: 'call', callee, argument: expr(x) }), f)
 	Object.defineProperty(f, 'name', {
-		value: '',
+		value: undefined,
 		writable: true,
 		enumerable: true,
 		configurable: true,
@@ -66,10 +66,12 @@ const $b = $('b')
 const $c = $('c')
 const $f = $('f')
 const $g = $('g')
+const $k = $('k')
 const $n = $('n')
 const $s = $('s')
 const $x = $('x')
 const $y = $('y')
+const $z = $('z')
 const $foo = $('foo')
 const $bar = $('bar')
 const $nil = $('nil')
@@ -110,6 +112,25 @@ function concat(x: Expression | string, y: Expression | string): Expression {
 	return call('++', expr(x), expr(y))
 }
 
+function pprint(x: Expression) {
+	let out = ''
+		; (function recurse(x: any) {
+			if (x && typeof x === 'object' || typeof x === 'function') {
+				out += '{'
+				for (const key in x) if (x[key] !== undefined) {
+					out += key
+					out += ':'
+					recurse(x[key])
+					out += ','
+				}
+				out += '}'
+			} else {
+				out += JSON.stringify(x)
+			}
+		})(x)
+	console.log(out)
+}
+
 // steal an unexported class out of Vitest
 const AsymmetricMatcher = Object.getPrototypeOf(expect.anything().constructor)
 class SomeTypeVariable extends AsymmetricMatcher {
@@ -118,7 +139,7 @@ class SomeTypeVariable extends AsymmetricMatcher {
 		if (!this.name) {
 			this.name = other?.name
 		}
-		return other?.tag === 'typeVariable' && other.name === this.name && other.quantified === false
+		return other?.tag === 'typeVariable' && other.name === this.name
 	}
 	toString() {
 		return `SomeTypeVariable(${this.name})`
@@ -244,12 +265,171 @@ test('(\\f -> f f)', () => {
 	)).toThrow('infinite')
 })
 
-// test('let identity = (\\x -> x) in identity identity', () => {
-// 	const a = someTypeVariable()
-// 	expect(inferProgram(std,
-// 		let$('identity', λ('x', $x), $identity($identity))
-// 	)).toEqual(functionType(a, a))
-// })
+test('let identity = (\\x -> x) in identity identity', () => {
+	const a = someTypeVariable()
+	expect(inferProgram(std,
+		let$('identity', λ('x', $x), $identity($identity))
+	)).toEqual(functionType(a, a))
+})
+
+test('let identity = (\\x -> x) in (identity 42, identity "foo")', () => {
+	expect(inferProgram(std,
+		let$('identity', λ('x', $x), call(',', $identity(42), $identity('foo')))
+	)).toEqual(pairType(builtinTypes.int, builtinTypes.string))
+})
+
+test('\\x -> let y = x in (y + 1, y ++ [])', () => {
+	expect(() => inferProgram(std,
+		λ('x', let$('y', $x, call(',', plus($y, 1), concat($y, $nil))))
+	)).toThrow('match')
+})
+
+test('\\x -> let y = (\\z -> z) in y', () => {
+	const a = someTypeVariable()
+	expect(inferProgram(std,
+		λ('x', let$('y', λ('z', $z), $y))
+	)).toEqual(functionType(someTypeVariable(), a, a))
+})
+
+test('\\x -> let y = x in y', () => {
+	const a = someTypeVariable()
+	expect(inferProgram(std,
+		λ('x', let$('y', $x, $y))
+	)).toEqual(functionType(a, a))
+})
+
+test('\\x -> let y = (\\z -> x) in y', () => {
+	const a = someTypeVariable()
+	expect(inferProgram(std,
+		λ('x', let$('y', λ('z', $x), $y))
+	)).toEqual(functionType(a, someTypeVariable(), a))
+})
+
+test('\\x -> \\y -> x y', () => {
+	const a = someTypeVariable()
+	const b = someTypeVariable()
+	expect(inferProgram(std,
+		λ('x', λ('y', $x($y)))
+	)).toEqual(functionType(functionType(a, b), a, b))
+})
+
+test('let c = (\\x -> \\y -> x y) in c', () => {
+	const a = someTypeVariable()
+	const b = someTypeVariable()
+	expect(inferProgram(std,
+		let$('c', λ('x', λ('y', $x($y))), $c)
+	)).toEqual(functionType(functionType(a, b), a, b))
+})
+
+test('let y = (\\z -> z) in y', () => {
+	const a = someTypeVariable()
+	expect(inferProgram(std,
+		let$('y', λ('z', $z), $y)
+	)).toEqual(functionType(a, a))
+})
+
+test('\\x -> let y = (\\z -> z) in y', () => {
+	const a = someTypeVariable()
+	const b = someTypeVariable()
+	expect(inferProgram(std,
+		λ('x', let$('y', λ('z', $z), $y))
+	)).toEqual(functionType(a, functionType(b, b)))
+})
+
+test('\\x -> let y = (\\z -> z) in y x', () => {
+	const a = someTypeVariable()
+	expect(inferProgram(std,
+		λ('x', let$('y', λ('z', $z), $y($x)))
+	)).toEqual(functionType(a, a))
+})
+
+test('\\x -> x x', () => {
+	expect(() => inferProgram(std,
+		λ('x', $x($x))
+	)).toThrow('infinite')
+})
+
+test('let x = x in x', () => {
+	expect(() => inferProgram(std,
+		let$('x', $x, $x)
+	)).toThrow('undefined')
+})
+
+test('\\y -> y (\\z -> y z)', () => {
+	expect(() => inferProgram(std,
+		λ('y', $y(λ('z', $y($z))))
+	)).toThrow('infinite')
+})
+
+test('\\x -> \\y -> \\k -> k (k x y)', () => {
+	const a = someTypeVariable()
+	const b = someTypeVariable()
+	expect(inferProgram(std,
+		λ('x', λ('y', λ('k', $k($k($x, $y)))))
+	)).toEqual(functionType(a, b, functionType(a, b, a), b, a))
+})
+
+test('\\x -> \\y -> \\k -> k (k x y) (k y x)', () => {
+	// This involves unifying two type variables with the same name.
+	const a = someTypeVariable()
+	expect(inferProgram(std,
+		λ('x', λ('y', λ('k', $k($k($x, $y), $k($y, $x)))))
+	)).toEqual(functionType(a, a, functionType(a, a, a), a))
+})
+
+test('let identity = (\\x -> x) in identity identity', () => {
+	const a = someTypeVariable()
+	expect(inferProgram(std,
+		let$('identity', λ('x', $x), $identity($identity))
+	)).toEqual(functionType(a, a))
+})
+
+test('let x = (\\a -> \\b -> a b) in let y = let z = x (\\a -> a) in z in y', () => {
+	const a = someTypeVariable()
+	expect(inferProgram(std,
+		let$('x', λ('a', λ('b', $a($b))),
+			let$('y', let$('z', $x(λ('a', $a)), $z), $y))
+	)).toEqual(functionType(a, a))
+})
+
+test('\\x -> \\y -> let z = x y in \\x -> y x', () => {
+	const a = someTypeVariable()
+	const b = someTypeVariable()
+	const c = someTypeVariable()
+	expect(inferProgram(std,
+		λ('x', λ('y', let$('z', $x($y), λ('x', $y($x)))))
+	)).toEqual(functionType(functionType(functionType(a, b), c), functionType(functionType(a, b), functionType(a, b))))
+})
+
+test('\\x -> let y = (\\z -> x z) in y', () => {
+	const a = someTypeVariable()
+	const b = someTypeVariable()
+	expect(inferProgram(std,
+		λ('x', let$('y', λ('z', $x($z)), $y))
+	)).toEqual(functionType(functionType(a, b), a, b))
+})
+
+test('\\x -> \\y -> let x = x y in x y', () => {
+	const a = someTypeVariable()
+	const b = someTypeVariable()
+	expect(inferProgram(std,
+		λ('x', λ('y', let$('x', $x($y), $x($y))))
+	)).toEqual(functionType(functionType(a, a, b), a, b))
+})
+
+test('\\x -> let y = x in y y', () => {
+	expect(() => inferProgram(std,
+		λ('x', let$('y', $x, $y($y)))
+	)).toThrowError('infinite')
+})
+
+test('\\x -> let y = let z = x (\\x -> x) in z in y', () => {
+	const a = someTypeVariable()
+	const b = someTypeVariable()
+	expect(inferProgram(std,
+		λ('x', let$('y', let$('z', $x(λ('x', $x)), $z), $y))
+	)).toEqual(functionType(functionType(functionType(a, a), b), b))
+})
 
 // test("let foo = (\\a -> foo a) in foo 'x'", () => {
 // 	expect(inferProgram(std,

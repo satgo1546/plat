@@ -14,7 +14,7 @@ export type Expression =
 export type Type =
 	| { tag: 'namedType', name: string }
 	| { tag: 'reify', generic: Type, argument: Type }
-	| { tag: 'typeVariable', link?: Type, name: string, quantified: boolean }
+	| { tag: 'typeVariable', link?: Type, name: string, level: number }
 
 export const builtinTypes = {
 	null: { tag: 'namedType', name: 'null' },
@@ -31,8 +31,10 @@ export const builtinTypes = {
 	pair: { tag: 'namedType', name: 'pair' },
 } satisfies Record<string, Type>
 
-export function functionType(parameter: Type, result: Type): Type {
-	return {
+let currentLevel = 0
+
+export function functionType(...types: Type[]): Type {
+	return types.reduceRight((result, parameter) => ({
 		tag: 'reify',
 		generic: {
 			tag: 'reify',
@@ -40,11 +42,11 @@ export function functionType(parameter: Type, result: Type): Type {
 			argument: parameter,
 		},
 		argument: result,
-	}
+	}))
 }
 
 export function newTypeVariable(): Type & { tag: 'typeVariable' } {
-	return { tag: 'typeVariable', name: crypto.randomUUID(), quantified: false }
+	return { tag: 'typeVariable', name: crypto.randomUUID(), level: currentLevel }
 }
 
 function find(type: Type): Type {
@@ -54,24 +56,31 @@ function find(type: Type): Type {
 	return type
 }
 
-function occurs(type: Type, typeVariable: Type & { tag: 'typeVariable' }): boolean {
-	type = find(type)
-	switch (type.tag) {
-		case 'namedType':
-			return false
-		case 'reify':
-			return occurs(type.generic, typeVariable) || occurs(type.argument, typeVariable)
-		case 'typeVariable':
-			return type.name === typeVariable.name
-	}
-}
-
 function unify(a: Type, b: Type): void {
 	a = find(a)
 	b = find(b)
 	if (a.tag === 'typeVariable') {
-		if (occurs(b, a)) throw new Error('infinite type')
+		if (b.tag === 'typeVariable' && a.name === b.name) {
+			if (a.level !== b.level) throw new Error('?')
+			return
+		}
+		(function recurse(type: Type) {
+			type = find(type)
+			switch (type.tag) {
+				case 'namedType':
+					break
+				case 'reify':
+					recurse(type.generic)
+					recurse(type.argument)
+					break
+				case 'typeVariable':
+					if (type.name === a.name) throw new Error('infinite type')
+					type.level = Math.min(type.level, a.level)
+					break
+			}
+		})(b)
 		a.link = b
+		a.level = NaN // should not matter, meant for debugging
 	} else if (b.tag === 'typeVariable') {
 		unify(b, a)
 	} else if (a.tag === 'namedType' && b.tag === 'namedType' && a.name === b.name) {
@@ -84,16 +93,51 @@ function unify(a: Type, b: Type): void {
 	}
 }
 
+function generalize(type: Type): Type {
+	type = find(type)
+	switch (type.tag) {
+		case 'namedType':
+			return type
+		case 'reify':
+			return {
+				tag: 'reify',
+				generic: generalize(type.generic),
+				argument: generalize(type.argument),
+			}
+		case 'typeVariable':
+			if (type.level > currentLevel) type.level = Infinity
+			return type
+	}
+}
+
+function instantiate(type: Type): Type {
+	const map: Record<string, Type> = Object.create(null)
+	return function recurse(type: Type): Type {
+		type = find(type)
+		switch (type.tag) {
+			case 'namedType':
+				return type
+			case 'reify':
+				return {
+					tag: 'reify',
+					generic: recurse(type.generic),
+					argument: recurse(type.argument),
+				}
+			case 'typeVariable':
+				return type.level === Infinity ? map[type.name] ??= newTypeVariable() : type
+		}
+	}(type)
+}
+
 export type Scope = Record<string, Type>
 
 function inferExpression(scope: Scope, expression: Expression): Type {
 	switch (expression.tag) {
 		case 'variable':
-			if (Object.hasOwn(scope, expression.name)) {
-				return scope[expression.name]
-			} else {
+			if (!Object.hasOwn(scope, expression.name)) {
 				throw new Error(`undefined variable '${expression.name}'`)
 			}
+			return instantiate(scope[expression.name])
 		case 'literal':
 			return {
 				char: builtinTypes.char,
@@ -115,9 +159,12 @@ function inferExpression(scope: Scope, expression: Expression): Type {
 				[expression.parameterName]: parameterType,
 			}, expression.body))
 		case 'let':
+			currentLevel++
+			const variableType = inferExpression(scope, expression.variableValue)
+			currentLevel--
 			return inferExpression({
 				...scope,
-				[expression.variableName]: inferExpression(scope, expression.variableValue),
+				[expression.variableName]: generalize(variableType),
 			}, expression.body)
 	}
 }
@@ -138,5 +185,6 @@ function recursiveFind(type: Type): Type {
 }
 
 export function inferProgram(scope: Scope, expression: Expression): Type {
+	currentLevel = 0
 	return recursiveFind(inferExpression(scope, expression))
 }
