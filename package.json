@@ -1,10 +1,7 @@
 {
-  "name": "lambda-lang",
-  "version": "0.0.0",
-  "main": "index.ts",
-  "private": true,
-  "packageManager": "pnpm@9.12.2+sha512.22721b3a11f81661ae1ec68ce1a7b879425a1ca5b991c975b074ac220b187ce56c708fe5db69f4c962c989452eee76c82877f4ee80f474cebd61ee13461b6228",
-  "dependencies": {
-    "@types/node": "^22.8.2"
-  }
+	"devDependencies": {
+		"@vitest/coverage-v8": "^3.2.4",
+		"vitest": "^3.2.4"
+	},
+	"packageManager": "pnpm@10.16.0+sha512.8066e7b034217b700a9a4dbb3a005061d641ba130a89915213a10b3ca4919c19c037bec8066afdc559b89635fdb806b16ea673f2468fbb28aabfa13c53e3f769"
 }
