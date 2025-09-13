@@ -9,7 +9,7 @@ export type Expression =
 	}
 	| { tag: 'call', callee: Expression, argument: Expression }
 	| { tag: 'function', parameterName: string, body: Expression }
-	| { tag: 'let', variableName: string, variableValue: Expression, body: Expression }
+	| { tag: 'let', variables: Record<string, Expression>, body: Expression }
 
 export type Type =
 	| { tag: 'namedType', name: string }
@@ -160,12 +160,18 @@ function inferExpression(scope: Scope, expression: Expression): Type {
 			}, expression.body))
 		case 'let':
 			currentLevel++
-			const variableType = inferExpression(scope, expression.variableValue)
+			const innerScope = { ...scope }
+			for (const name in expression.variables) {
+				innerScope[name] = newTypeVariable()
+			}
+			for (const name in expression.variables) {
+				unify(innerScope[name], inferExpression(innerScope, expression.variables[name]))
+			}
 			currentLevel--
-			return inferExpression({
-				...scope,
-				[expression.variableName]: generalize(variableType),
-			}, expression.body)
+			for (const name in expression.variables) {
+				innerScope[name] = generalize(innerScope[name])
+			}
+			return inferExpression(innerScope, expression.body)
 	}
 }
 
