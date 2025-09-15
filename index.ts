@@ -18,24 +18,26 @@ export type Expression =
 		body: Expression,
 	}
 
+export type Kind = undefined | [Kind, Kind]
+
 export type Type =
-	| { tag: 'namedType', name: string }
+	| { tag: 'namedType', name: string, kind?: Kind }
 	| { tag: 'reify', generic: Type, argument: Type }
-	| { tag: 'typeVariable', link?: Type, name: string, level: number }
+	| { tag: 'typeVariable', link?: Type, name: string, kind?: Kind, level: number }
 
 export const builtinTypes = {
 	null: { tag: 'namedType', name: 'null' },
 	int: { tag: 'namedType', name: 'int' },
 	char: { tag: 'namedType', name: 'char' },
 	float: { tag: 'namedType', name: 'float' },
-	list: { tag: 'namedType', name: 'list' },
+	list: { tag: 'namedType', name: 'list', kind: [, ,] },
 	string: {
 		tag: 'reify',
-		generic: { tag: 'namedType', name: 'list' },
+		generic: { tag: 'namedType', name: 'list', kind: [, ,] },
 		argument: { tag: 'namedType', name: 'char' },
 	},
-	function: { tag: 'namedType', name: 'function' },
-	pair: { tag: 'namedType', name: 'pair' },
+	function: { tag: 'namedType', name: 'function', kind: [, [, ,]] },
+	pair: { tag: 'namedType', name: 'pair', kind: [, [, ,]] },
 } satisfies Record<string, Type>
 
 let currentLevel = 0
@@ -52,8 +54,8 @@ export function functionType(...types: Type[]): Type {
 	}))
 }
 
-export function newTypeVariable(): Type & { tag: 'typeVariable' } {
-	return { tag: 'typeVariable', name: crypto.randomUUID(), level: currentLevel }
+export function newTypeVariable(kind?: Kind): Type & { tag: 'typeVariable' } {
+	return { tag: 'typeVariable', name: crypto.randomUUID(), kind, level: currentLevel }
 }
 
 function find(type: Type): Type {
@@ -70,6 +72,9 @@ function unify(a: Type, b: Type): void {
 		if (b.tag === 'typeVariable' && a.name === b.name) {
 			if (a.level !== b.level) throw new Error('?')
 			return
+		}
+		if (!areEqualKinds(getKind(a), getKind(b))) {
+			throw new Error('kind mismatch')
 		}
 		(function recurse(type: Type) {
 			type = find(type)
@@ -131,7 +136,7 @@ function instantiate(type: Type): Type {
 					argument: recurse(type.argument),
 				}
 			case 'typeVariable':
-				return type.level === Infinity ? map[type.name] ??= newTypeVariable() : type
+				return type.level === Infinity ? map[type.name] ??= newTypeVariable(type.kind) : type
 		}
 	}(type)
 }
@@ -148,6 +153,7 @@ function areEqualTypes(a: Type, b: Type): boolean {
 			return recurse(a.generic, b.generic) && recurse(a.argument, b.argument)
 		} else if (a.tag === 'typeVariable' && b.tag === 'typeVariable') {
 			if (a.level !== b.level) return false
+			if (!areEqualKinds(a.kind, b.kind)) return false
 			if (a.level === Infinity) {
 				if (a.name in aToB) {
 					return b.name === aToB[a.name]
@@ -165,6 +171,22 @@ function areEqualTypes(a: Type, b: Type): boolean {
 			return false
 		}
 	}(a, b)
+}
+
+function getKind(type: Type): Kind {
+	if (type.tag === 'reify') {
+		const kind = getKind(type.generic)
+		if (!kind || !areEqualKinds(kind[0], getKind(type.argument))) {
+			throw new Error('wrong kind')
+		}
+		return kind[1]
+	} else {
+		return type.kind
+	}
+}
+
+function areEqualKinds(a: Kind, b: Kind): boolean {
+	return a === b || !!a && !!b && areEqualKinds(a[0], b[0]) && areEqualKinds(a[1], b[1])
 }
 
 export type Scope = Record<string, Type>
@@ -211,6 +233,9 @@ function inferExpression(scope: Scope, expression: Expression): Type {
 			}
 			for (const name in expression.variables) if (expression.variables[name].type) {
 				currentLevel++
+				if (getKind(expression.variables[name].type) !== undefined) {
+					throw new Error('incomplete type')
+				}
 				let type = instantiate(expression.variables[name].type)
 				unify(type, inferExpression(innerScope, expression.variables[name].value))
 				currentLevel--

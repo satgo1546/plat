@@ -678,3 +678,32 @@ test('let f :: a -> a; f x = f x in f', () => {
 		}, $f)
 	)).toEqual(functionType(a, a))
 })
+
+test('let (a :: []) = \\x -> 123 in a', () => {
+	expect(() => inferProgram(std,
+		letrec$({
+			a: [builtinTypes.list, λ('x', 123)],
+		}, $a)
+	)).toThrow('incomplete type')
+})
+
+test('let (a :: [] []) = nil in a', () => {
+	expect(() => inferProgram(std,
+		letrec$({
+			a: [listType(builtinTypes.list), $nil],
+		}, $a)
+	)).toThrow('wrong kind')
+})
+
+test('data SomeKind a = SomeKind (a Int)\nlet unwrap :: a b -> b; unwrap = unwrap; getVal :: SomeKind t -> t Int; getVal = getVal in let foo y = (getVal y, unwrap y) in foo', () => {
+	const t: Type = { tag: 'typeVariable', name: 't', kind: [, ,], level: Infinity }
+	expect(() => inferProgram(std,
+		letrec$({
+			unwrap: [functionType({ tag: 'reify', generic: t, argument: T }, T), $('unwrap')],
+			getVal: [functionType(
+				{ tag: 'reify', generic: { tag: 'namedType', name: 'SomeKind', kind: [[, ,], ,] }, argument: t },
+				{ tag: 'reify', generic: t, argument: builtinTypes.int },
+			), $('getVal')],
+		}, let$('foo', λ('y', call(',', $('getVal')($y), $('unwrap')($y))), $foo))
+	)).toThrow('kind mismatch')
+})
