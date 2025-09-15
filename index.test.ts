@@ -89,25 +89,30 @@ function λ(parameterName: string, body: string | number | Expression): Callable
 function let$(variableName: string, variableValue: string | number | Expression, body: string | number | Expression): Expression {
 	return {
 		tag: 'let',
-		variables: { [variableName]: expr(variableValue) },
+		variables: { [variableName]: { value: expr(variableValue) } },
 		body: expr(body),
 	}
 }
 
 function letrec$(variables: Record<string, string | number | Expression | [Type, string | number | Expression]>, body: string | number | Expression): Expression {
-	const values: Record<string, Expression> = {}
-	for (const name in variables) {
-		if (Array.isArray(variables[name])) {
-			values[name] = expr(variables[name][1])
-		} else {
-			values[name] = expr(variables[name])
-		}
-	}
-	return {
+	const result: Expression & { tag: 'let' } = {
 		tag: 'let',
-		variables: values,
+		variables: {},
 		body: expr(body),
 	}
+	for (const name in variables) {
+		if (Array.isArray(variables[name])) {
+			result.variables[name] = {
+				type: variables[name][0],
+				value: expr(variables[name][1]),
+			}
+		} else {
+			result.variables[name] = {
+				value: expr(variables[name]),
+			}
+		}
+	}
+	return result
 }
 
 function call(callee: Expression | string, ...args: (string | number | Expression)[]): Expression {
@@ -149,13 +154,11 @@ const AsymmetricMatcher = Object.getPrototypeOf(expect.anything().constructor)
 class SomeTypeVariable extends AsymmetricMatcher {
 	name?: string
 	asymmetricMatch(other: any) {
-		if (!this.name) {
-			this.name = other?.name
-		}
-		return other?.tag === 'typeVariable' && other.name === this.name
+		if (other?.tag !== 'typeVariable') return false
+		return (this.name ??= other.name) === other.name
 	}
 	toString() {
-		return `SomeTypeVariable(${this.name})`
+		return `SomeTypeVariable(${this.name ?? '?'})`
 	}
 	toAsymmetricMatcher() {
 		return this.toString()
@@ -560,11 +563,62 @@ test('let f n = g (n - 1); g n = f (n - 1) in let a n = f n + b n; b n = g n + a
 	)).toEqual(functionType(builtinTypes.int, builtinTypes.int))
 })
 
-// test('let (f :: a -> a) = \\x -> x + 1 in f', () => {
-// 	expect(() => inferProgram(std,
-// 		letrec$('f', λ('x', plus($x, 1)), $f)
-// 	)).toThrow('too general')
-// })
+test('let (x :: Int) = 123 in x', () => {
+	expect(inferProgram(std,
+		letrec$({
+			x: [builtinTypes.int, 123],
+		}, $x)
+	)).toEqual(builtinTypes.int)
+})
+
+test('let (x :: [Int]) = [] in x', () => {
+	expect(inferProgram(std,
+		letrec$({
+			x: [listType(builtinTypes.int), $nil],
+		}, $x)
+	)).toEqual(listType(builtinTypes.int))
+})
+
+test('let (x :: [Int]) = []; (y :: String) = [] in y', () => {
+	expect(inferProgram(std,
+		letrec$({
+			x: [listType(builtinTypes.int), $nil],
+			y: [builtinTypes.string, $nil],
+		}, $y)
+	)).toEqual(builtinTypes.string)
+})
+
+test('let (x :: a) = 123 in x', () => {
+	expect(() => inferProgram(std,
+		letrec$({
+			x: [T, 123],
+		}, $x)
+	)).toThrow('too general')
+})
+
+test('let (x :: char) = 123 in x', () => {
+	expect(() => inferProgram(std,
+		letrec$({
+			x: [builtinTypes.char, 123],
+		}, $x)
+	)).toThrow('mismatch')
+})
+
+test('let x :: [[Int]] -> Int; x n = 42 in x "foo"', () => {
+	expect(() => inferProgram(std,
+		letrec$({
+			x: [listType(listType(builtinTypes.int)), 42],
+		}, $x('foo'))
+	)).toThrow('mismatch')
+})
+
+test('let (f :: a -> a) = \\x -> x + 1 in f', () => {
+	expect(() => inferProgram(std,
+		letrec$({
+			f: [functionType(T, T), λ('x', plus($x, 1))],
+		}, $f)
+	)).toThrow('too general')
+})
 
 test('let a x = [b x]; b y = let foo = c \'c\' in y; c z = "foo" ++ a z in a', () => {
 	expect(inferProgram(std,
@@ -574,4 +628,53 @@ test('let a x = [b x]; b y = let foo = c \'c\' in y; c z = "foo" ++ a z in a', (
 			c: λ('z', concat('foo', $a($z)))
 		}, $a)
 	)).toEqual(functionType(builtinTypes.char, builtinTypes.string))
+})
+
+test('let a x = [b x]; b :: t -> t; b y = let foo = c \'c\' in y; c z = "foo" ++ a z in b', () => {
+	// Here, a :: Char -> String because a and c belong to the same binding group.
+	// If the group is broken into smaller pieces, a would have type t -> [t].
+	const a = someTypeVariable()
+	expect(inferProgram(std,
+		letrec$({
+			a: λ('x', $cons($b($x), $nil)),
+			b: [functionType(T, T), λ('y', let$('foo', $c('c'), $y))],
+			c: λ('z', concat('foo', $a($z)))
+		}, $b)
+	)).toEqual(functionType(a, a))
+})
+
+test('let a x = b x; b :: Int -> Int; b x = a (a x) in a', () => {
+	expect(inferProgram(std,
+		letrec$({
+			a: λ('x', $b($x)),
+			b: [functionType(builtinTypes.int, builtinTypes.int), λ('x', $a($a($x)))],
+		}, $a)
+	)).toEqual(functionType(builtinTypes.int, builtinTypes.int))
+})
+
+test('let a x = b x; b :: t -> t; b x = let foo = a 123 in a x in a', () => {
+	const a = someTypeVariable()
+	expect(inferProgram(std,
+		letrec$({
+			a: λ('x', $b($x)),
+			b: [functionType(T, T), λ('x', let$('foo', $a(123), $a($x)))],
+		}, $a)
+	)).toEqual(functionType(a, a))
+})
+
+test('let f :: a -> b; f x = x in f', () => {
+	expect(() => inferProgram(std,
+		letrec$({
+			f: [functionType(T, T2), λ('x', $x)],
+		}, $f)
+	)).toThrow('too general')
+})
+
+test('let f :: a -> a; f x = f x in f', () => {
+	const a = someTypeVariable()
+	expect(inferProgram(std,
+		letrec$({
+			f: [functionType(T, T), λ('x', $f($x))],
+		}, $f)
+	)).toEqual(functionType(a, a))
 })

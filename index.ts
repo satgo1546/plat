@@ -9,7 +9,14 @@ export type Expression =
 	}
 	| { tag: 'call', callee: Expression, argument: Expression }
 	| { tag: 'function', parameterName: string, body: Expression }
-	| { tag: 'let', variables: Record<string, Expression>, body: Expression }
+	| {
+		tag: 'let',
+		variables: Record<string, {
+			type?: Type,
+			value: Expression,
+		}>,
+		body: Expression,
+	}
 
 export type Type =
 	| { tag: 'namedType', name: string }
@@ -129,6 +136,37 @@ function instantiate(type: Type): Type {
 	}(type)
 }
 
+function areEqualTypes(a: Type, b: Type): boolean {
+	const aToB: Record<string, string> = Object.create(null)
+	const bToA: Record<string, string> = Object.create(null)
+	return function recurse(a: Type, b: Type): boolean {
+		a = find(a)
+		b = find(b)
+		if (a.tag === 'namedType' && b.tag === 'namedType') {
+			return a.name === b.name
+		} else if (a.tag === 'reify' && b.tag === 'reify') {
+			return recurse(a.generic, b.generic) && recurse(a.argument, b.argument)
+		} else if (a.tag === 'typeVariable' && b.tag === 'typeVariable') {
+			if (a.level !== b.level) return false
+			if (a.level === Infinity) {
+				if (a.name in aToB) {
+					return b.name === aToB[a.name]
+				} else if (b.name in bToA) {
+					return false
+				} else {
+					aToB[a.name] = b.name
+					bToA[b.name] = a.name
+					return true
+				}
+			} else {
+				return a.name === b.name
+			}
+		} else {
+			return false
+		}
+	}(a, b)
+}
+
 export type Scope = Record<string, Type>
 
 function inferExpression(scope: Scope, expression: Expression): Type {
@@ -162,14 +200,24 @@ function inferExpression(scope: Scope, expression: Expression): Type {
 			currentLevel++
 			const innerScope = { ...scope }
 			for (const name in expression.variables) {
-				innerScope[name] = newTypeVariable()
+				innerScope[name] = expression.variables[name].type ?? newTypeVariable()
 			}
-			for (const name in expression.variables) {
-				unify(innerScope[name], inferExpression(innerScope, expression.variables[name]))
+			for (const name in expression.variables) if (!expression.variables[name].type) {
+				unify(innerScope[name], inferExpression(innerScope, expression.variables[name].value))
 			}
 			currentLevel--
-			for (const name in expression.variables) {
+			for (const name in expression.variables) if (!expression.variables[name].type) {
 				innerScope[name] = generalize(innerScope[name])
+			}
+			for (const name in expression.variables) if (expression.variables[name].type) {
+				currentLevel++
+				let type = instantiate(expression.variables[name].type)
+				unify(type, inferExpression(innerScope, expression.variables[name].value))
+				currentLevel--
+				type = generalize(type)
+				if (!areEqualTypes(expression.variables[name].type, type)) {
+					throw new Error('annotation too general')
+				}
 			}
 			return inferExpression(innerScope, expression.body)
 	}
