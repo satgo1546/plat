@@ -13,7 +13,7 @@ export type Expression =
 		tag: 'let',
 		variables: Record<string, {
 			type?: Type,
-			value: Expression,
+			clauses: Clause[],
 		}>,
 		body: Expression,
 	}
@@ -24,6 +24,14 @@ export type Type =
 	| { tag: 'namedType', name: string, kind?: Kind }
 	| { tag: 'reify', generic: Type, argument: Type }
 	| { tag: 'typeVariable', link?: Type, name: string, kind?: Kind, level: number }
+
+export type Pattern =
+	| { tag: 'wildcard' }
+	| { tag: 'as', variableName: string, pattern: Pattern }
+	| { tag: 'literal' } & Expression
+	| { tag: 'structure', constructor: Type, fields: Pattern[] }
+
+export type Clause = { parameters: Pattern[], value: Expression }
 
 export const builtinTypes = {
 	null: { tag: 'namedType', name: 'null' },
@@ -191,6 +199,45 @@ function areEqualKinds(a: Kind, b: Kind): boolean {
 
 export type Scope = Record<string, Type>
 
+function inferPattern(pattern: Pattern): { scope: Scope, type: Type } {
+	switch (pattern.tag) {
+		case 'wildcard':
+			return { scope: {}, type: newTypeVariable() }
+		case 'as':
+			const result = inferPattern(pattern.pattern)
+			result.scope[pattern.variableName] = result.type
+			return result
+		case 'literal':
+			return { scope: {}, type: inferExpression({}, pattern) }
+		case 'structure':
+			const fields = pattern.fields.map(inferPattern)
+			const resultType = newTypeVariable()
+			unify(
+				instantiate(pattern.constructor),
+				functionType(...fields.map(x => x.type), resultType),
+			)
+			return {
+				scope: Object.assign({}, ...fields.map(x => x.scope)),
+				type: resultType,
+			}
+	}
+}
+
+function inferClauses(scope: Scope, clauses: Clause[]): Type {
+	const resultType = newTypeVariable()
+	for (const clause of clauses) {
+		const parameters = clause.parameters.map(inferPattern)
+		unify(
+			resultType,
+			functionType(
+				...parameters.map(x => x.type),
+				inferExpression(Object.assign({}, scope, ...parameters.map(x => x.scope)), clause.value),
+			)
+		)
+	}
+	return resultType
+}
+
 function inferExpression(scope: Scope, expression: Expression): Type {
 	switch (expression.tag) {
 		case 'variable':
@@ -225,7 +272,7 @@ function inferExpression(scope: Scope, expression: Expression): Type {
 				innerScope[name] = expression.variables[name].type ?? newTypeVariable()
 			}
 			for (const name in expression.variables) if (!expression.variables[name].type) {
-				unify(innerScope[name], inferExpression(innerScope, expression.variables[name].value))
+				unify(innerScope[name], inferClauses(innerScope, expression.variables[name].clauses))
 			}
 			currentLevel--
 			for (const name in expression.variables) if (!expression.variables[name].type) {
@@ -237,7 +284,7 @@ function inferExpression(scope: Scope, expression: Expression): Type {
 					throw new Error('incomplete type')
 				}
 				let type = instantiate(expression.variables[name].type)
-				unify(type, inferExpression(innerScope, expression.variables[name].value))
+				unify(type, inferClauses(innerScope, expression.variables[name].clauses))
 				currentLevel--
 				type = generalize(type)
 				if (!areEqualTypes(expression.variables[name].type, type)) {

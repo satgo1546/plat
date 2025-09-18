@@ -1,6 +1,6 @@
 import { test, expect } from 'vitest'
 
-import { inferProgram, builtinTypes, functionType, type Expression, type Type, type Scope } from './index.ts'
+import { inferProgram, builtinTypes, functionType, type Expression, type Type, type Scope, Pattern } from './index.ts'
 
 function listType(element: Type): Type {
 	return {
@@ -44,7 +44,7 @@ function expr(x: string | number | Expression): Expression {
 
 type CallableExpression = Expression & ((...args: (string | number | Expression)[]) => Expression)
 
-function makeCallable(x: Expression): CallableExpression {
+function makeCallable<T extends Expression>(x: T): T & CallableExpression {
 	const f: CallableExpression = (...args) =>
 		// @ts-ignore
 		args.reduce((callee, x) => ({ tag: 'call', callee, argument: expr(x) }), f)
@@ -57,7 +57,7 @@ function makeCallable(x: Expression): CallableExpression {
 	return Object.assign(f, x)
 }
 
-function $(name: string): CallableExpression {
+function $(name: string): CallableExpression & { tag: 'variable' } {
 	return makeCallable({ tag: 'variable', name })
 }
 
@@ -67,10 +67,13 @@ const $c = $('c')
 const $f = $('f')
 const $g = $('g')
 const $k = $('k')
+const $m = $('m')
 const $n = $('n')
 const $s = $('s')
 const $x = $('x')
+const $xs = $('xs')
 const $y = $('y')
+const $ys = $('ys')
 const $z = $('z')
 const $foo = $('foo')
 const $bar = $('bar')
@@ -78,7 +81,7 @@ const $nil = $('nil')
 const $cons = $('cons')
 const $identity = $('identity')
 
-function λ(parameterName: string, body: string | number | Expression): CallableExpression {
+function λ(parameterName: string, body: string | number | Expression): CallableExpression & { tag: 'function' } {
 	return makeCallable({
 		tag: 'function',
 		parameterName,
@@ -89,12 +92,16 @@ function λ(parameterName: string, body: string | number | Expression): Callable
 function let$(variableName: string, variableValue: string | number | Expression, body: string | number | Expression): Expression {
 	return {
 		tag: 'let',
-		variables: { [variableName]: { value: expr(variableValue) } },
+		variables: { [variableName]: { clauses: [{ parameters: [], value: expr(variableValue) }] } },
 		body: expr(body),
 	}
 }
 
-function letrec$(variables: Record<string, string | number | Expression | [Type, string | number | Expression]>, body: string | number | Expression): Expression {
+function letrec$(variables: Record<string,
+	| string | number | Expression
+	| [Type | undefined, string | number | Expression]
+	| [Type | undefined, ...[...PatternLike[], string | number | Expression][]]
+>, body: string | number | Expression): Expression {
 	const result: Expression & { tag: 'let' } = {
 		tag: 'let',
 		variables: {},
@@ -102,17 +109,41 @@ function letrec$(variables: Record<string, string | number | Expression | [Type,
 	}
 	for (const name in variables) {
 		if (Array.isArray(variables[name])) {
-			result.variables[name] = {
-				type: variables[name][0],
-				value: expr(variables[name][1]),
+			if (Array.isArray(variables[name][1])) {
+				result.variables[name] = {
+					type: variables[name][0],
+					clauses: variables[name].slice(1).map((x: any) => ({
+						parameters: x.slice(0, -1).map(pattern),
+						value: expr(x.at(-1)),
+					})),
+				}
+			} else {
+				result.variables[name] = {
+					type: variables[name][0],
+					clauses: [{ parameters: [], value: expr(variables[name][1]) }],
+				}
 			}
 		} else {
 			result.variables[name] = {
-				value: expr(variables[name]),
+				clauses: [{ parameters: [], value: expr(variables[name]) }],
 			}
 		}
 	}
 	return result
+}
+
+type PatternLike = string | number | { tag: 'variable', name: string } | [Type, ...PatternLike[]] | Pattern
+function pattern(x: PatternLike): Pattern {
+	if (typeof x === 'string' || typeof x === 'number') {
+		return expr(x) as Pattern
+	} else if (Array.isArray(x)) {
+		const [constructor, ...fields] = x as [Type, ...PatternLike[]]
+		return { tag: 'structure', constructor, fields: fields.map(pattern) }
+	} else if (x.tag === 'variable') {
+		return { tag: 'as', variableName: x.name, pattern: { tag: 'wildcard' } }
+	} else {
+		return x
+	}
 }
 
 function call(callee: Expression | string, ...args: (string | number | Expression)[]): Expression {
@@ -265,6 +296,14 @@ test('(\\s -> "s is: " ++ s) 99', () => {
 test('let identity = (\\x -> x) in identity "foo"', () => {
 	expect(inferProgram(std,
 		let$('identity', λ('x', $x), $identity('foo'))
+	)).toEqual(builtinTypes.string)
+})
+
+test('let identity x = x in identity "foo"', () => {
+	expect(inferProgram(std,
+		letrec$({
+			identity: [, [$x, $x]],
+		}, $identity('foo'))
 	)).toEqual(builtinTypes.string)
 })
 
@@ -461,15 +500,17 @@ test('let bar = bar in bar', () => {
 
 test('let f x = 2 + f (x + 1) in f', () => {
 	expect(inferProgram(std,
-		let$('f', λ('x', plus(2, $f(plus($x, 1)))), $f)
+		letrec$({
+			f: [, [$x, plus(2, $f(plus($x, 1)))]],
+		}, $f)
 	)).toEqual(functionType(builtinTypes.int, builtinTypes.int))
 })
 
 test('let f x = 2 + g x; g x = f (x + 1) in f', () => {
 	expect(inferProgram(std,
 		letrec$({
-			f: λ('x', plus(2, $g($x))),
-			g: λ('x', $f(plus($x, 1))),
+			f: [, [$x, plus(2, $g($x))]],
+			g: [, [$x, $f(plus($x, 1))]],
 		}, $f)
 	)).toEqual(functionType(builtinTypes.int, builtinTypes.int))
 })
@@ -477,8 +518,8 @@ test('let f x = 2 + g x; g x = f (x + 1) in f', () => {
 test('let f x = 2 + g x; g x = f (x + 1) in g', () => {
 	expect(inferProgram(std,
 		letrec$({
-			f: λ('x', plus(2, $g($x))),
-			g: λ('x', $f(plus($x, 1))),
+			f: [, [$x, plus(2, $g($x))]],
+			g: [, [$x, $f(plus($x, 1))]],
 		}, $g)
 	)).toEqual(functionType(builtinTypes.int, builtinTypes.int))
 })
@@ -497,8 +538,8 @@ test('let f x = 123; g y = 456 in [f, g]', () => {
 	// f and g are not mutually recursive but it's okay.
 	expect(inferProgram(std,
 		letrec$({
-			f: λ('x', 123),
-			g: λ('y', 456),
+			f: [, [$x, 123]],
+			g: [, [$y, 456]],
 		}, $cons($f, $cons($g, $nil)))
 	)).toEqual(listType(functionType(someTypeVariable(), builtinTypes.int)))
 })
@@ -506,8 +547,8 @@ test('let f x = 123; g y = 456 in [f, g]', () => {
 test('let f x = 2 + g x; g x = f (x + 1) in [f, g]', () => {
 	expect(inferProgram(std,
 		letrec$({
-			f: λ('x', plus(2, $g($x))),
-			g: λ('x', $f(plus($x, 1))),
+			f: [, [$x, plus(2, $g($x))]],
+			g: [, [$x, $f(plus($x, 1))]],
 		}, $cons($f, $cons($g, $nil)))
 	)).toEqual(listType(functionType(builtinTypes.int, builtinTypes.int)))
 })
@@ -518,13 +559,13 @@ test('let identity x = x in let foo n = identity identity n in foo identity', ()
 	// for identity and foo are not mutually recursive.
 	const a = someTypeVariable()
 	expect(inferProgram(std,
-		let$('identity', λ('x', $x),
-			let$('foo', λ('n', $identity($identity, $n)),
+		letrec$({ identity: [, [$x, $x]] },
+			letrec$({ foo: [, [$n, $identity($identity, $n)]] },
 				$foo($identity)))
 	)).toEqual(functionType(a, a))
 })
 
-test('let f n = g (n - 1); g n = f (n - 1) in f', () => {
+test('let f = \\n -> g (n - 1); g = \\n -> f (n - 1) in f', () => {
 	expect(inferProgram(std,
 		letrec$({
 			f: λ('n', $g(plus($n, -1))),
@@ -533,7 +574,7 @@ test('let f n = g (n - 1); g n = f (n - 1) in f', () => {
 	)).toEqual(functionType(builtinTypes.int, someTypeVariable()))
 })
 
-test('let f n = g (n - 1); g n = f (n - 1) + 1 in f', () => {
+test('let f = \\n -> g (n - 1); g = \\n -> f (n - 1) + 1 in f', () => {
 	expect(inferProgram(std,
 		letrec$({
 			f: λ('n', $g(plus($n, -1))),
@@ -542,7 +583,7 @@ test('let f n = g (n - 1); g n = f (n - 1) + 1 in f', () => {
 	)).toEqual(functionType(builtinTypes.int, builtinTypes.int))
 })
 
-test('let f n = g (n - 1); g n = f (n - 1) in let a n = f n in a', () => {
+test('let f = \\n -> g (n - 1); g = \\n -> f (n - 1) in let a = \\n -> f n in a', () => {
 	expect(inferProgram(std,
 		letrec$({
 			f: λ('n', $g(plus($n, -1))),
@@ -551,7 +592,7 @@ test('let f n = g (n - 1); g n = f (n - 1) in let a n = f n in a', () => {
 	)).toEqual(functionType(builtinTypes.int, someTypeVariable()))
 })
 
-test('let f n = g (n - 1); g n = f (n - 1) in let a n = f n + b n; b n = g n + a n in a', () => {
+test('let f = \\n -> g (n - 1); g = \\n -> f (n - 1) in let a = \\n -> f n + b n; b = \\n -> g n + a n in a', () => {
 	expect(inferProgram(std,
 		letrec$({
 			f: λ('n', $g(plus($n, -1))),
@@ -623,9 +664,9 @@ test('let (f :: a -> a) = \\x -> x + 1 in f', () => {
 test('let a x = [b x]; b y = let foo = c \'c\' in y; c z = "foo" ++ a z in a', () => {
 	expect(inferProgram(std,
 		letrec$({
-			a: λ('x', $cons($b($x), $nil)),
-			b: λ('y', let$('foo', $c('c'), $y)),
-			c: λ('z', concat('foo', $a($z)))
+			a: [, [$x, $cons($b($x), $nil)]],
+			b: [, [$y, let$('foo', $c('c'), $y)]],
+			c: [, [$z, concat('foo', $a($z))]],
 		}, $a)
 	)).toEqual(functionType(builtinTypes.char, builtinTypes.string))
 })
@@ -636,9 +677,9 @@ test('let a x = [b x]; b :: t -> t; b y = let foo = c \'c\' in y; c z = "foo" ++
 	const a = someTypeVariable()
 	expect(inferProgram(std,
 		letrec$({
-			a: λ('x', $cons($b($x), $nil)),
-			b: [functionType(T, T), λ('y', let$('foo', $c('c'), $y))],
-			c: λ('z', concat('foo', $a($z)))
+			a: [, [$x, $cons($b($x), $nil)]],
+			b: [functionType(T, T), [$y, let$('foo', $c('c'), $y)]],
+			c: [, [$z, concat('foo', $a($z))]],
 		}, $b)
 	)).toEqual(functionType(a, a))
 })
@@ -646,7 +687,7 @@ test('let a x = [b x]; b :: t -> t; b y = let foo = c \'c\' in y; c z = "foo" ++
 test('let a x = b x; b :: Int -> Int; b x = a (a x) in a', () => {
 	expect(inferProgram(std,
 		letrec$({
-			a: λ('x', $b($x)),
+			a: [, [$x, $b($x)]],
 			b: [functionType(builtinTypes.int, builtinTypes.int), λ('x', $a($a($x)))],
 		}, $a)
 	)).toEqual(functionType(builtinTypes.int, builtinTypes.int))
@@ -656,7 +697,7 @@ test('let a x = b x; b :: t -> t; b x = let foo = a 123 in a x in a', () => {
 	const a = someTypeVariable()
 	expect(inferProgram(std,
 		letrec$({
-			a: λ('x', $b($x)),
+			a: [, [$x, $b($x)]],
 			b: [functionType(T, T), λ('x', let$('foo', $a(123), $a($x)))],
 		}, $a)
 	)).toEqual(functionType(a, a))
@@ -706,4 +747,109 @@ test('data SomeKind a = SomeKind (a Int)\nlet unwrap :: a b -> b; unwrap = unwra
 			), $('getVal')],
 		}, let$('foo', λ('y', call(',', $('getVal')($y), $('unwrap')($y))), $foo))
 	)).toThrow('kind mismatch')
+})
+
+test('let a 0 n = n + 1; a m 0 = a (m - 1) 1; a m n = a (m - 1) (a m (n - 1)) in a 3 4', () => {
+	expect(inferProgram(std,
+		letrec$({
+			a: [,
+				[0, $n, plus($n, 1)],
+				[$m, 0, $a(plus($m, -1), 1)],
+				[$m, $n, $a(plus($m, -1), $a($m, plus($n, -1)))],
+			],
+		}, $a(3, 4))
+	)).toEqual(builtinTypes.int)
+})
+
+test('let a :: Int -> Int -> Int; a 0 n = n + 1; a m 0 = a (m - 1) 1; a m n = a (m - 1) (a m (n - 1)) in a 3 4', () => {
+	expect(inferProgram(std,
+		letrec$({
+			a: [
+				functionType(builtinTypes.int, builtinTypes.int, builtinTypes.int),
+				[0, $n, plus($n, 1)],
+				[$m, 0, $a(plus($m, -1), 1)],
+				[$m, $n, $a(plus($m, -1), $a($m, plus($n, -1)))],
+			],
+		}, $a(3, 4))
+	)).toEqual(builtinTypes.int)
+})
+
+test('let a :: t -> t; a 0 n = n + 1; a m 0 = a (m - 1) 1; a m n = a (m - 1) (a m (n - 1)) in a 3 4', () => {
+	expect(() => inferProgram(std,
+		letrec$({
+			a: [
+				functionType(T, T),
+				[0, $n, plus($n, 1)],
+				[$m, 0, $a(plus($m, -1), 1)],
+				[$m, $n, $a(plus($m, -1), $a($m, plus($n, -1)))],
+			],
+		}, $a(3, 4))
+	)).toThrow('match')
+})
+
+test('let f "" = 0; f (x:xs) = f xs + 1 in f', () => {
+	expect(inferProgram(std,
+		letrec$({
+			f: [,
+				['', 0],
+				[[std.cons, $x, $xs], plus($f($xs), 1)],
+			],
+		}, $f)
+	)).toEqual(functionType(builtinTypes.string, builtinTypes.int))
+})
+
+test('let f [] = 0; f (x:xs) = f xs + 1 in f', () => {
+	expect(inferProgram(std,
+		letrec$({
+			f: [,
+				[[std.nil], 0],
+				[[std.cons, $x, $xs], plus($f($xs), 1)],
+			],
+		}, $f)
+	)).toEqual(functionType(listType(someTypeVariable()), builtinTypes.int))
+})
+
+test('let f :: String -> Int; f [] = 0; f (x:xs) = f xs + 1 in f', () => {
+	expect(inferProgram(std,
+		letrec$({
+			f: [
+				functionType(builtinTypes.string, builtinTypes.int),
+				[[std.nil], 0],
+				[[std.cons, $x, $xs], plus($f($xs), 1)],
+			],
+		}, $f)
+	)).toEqual(functionType(builtinTypes.string, builtinTypes.int))
+})
+
+test('let g [] [] = 0; g [] (y:ys) = g [] ys - 1; g (x:xs) y = g xs y + 1 in g', () => {
+	expect(inferProgram(std,
+		letrec$({
+			g: [,
+				[[std.nil], [std.nil], 0],
+				[[std.nil], [std.cons, $y, $ys], plus($g($nil, $ys), -1)],
+				[[std.cons, $x, $xs], $y, plus($g($xs, $y), 1)],
+			],
+		}, $g)
+	)).toEqual(functionType(listType(someTypeVariable()), listType(someTypeVariable()), builtinTypes.int))
+})
+
+test('let g [] 0 = "foo" in g', () => {
+	expect(inferProgram(std,
+		letrec$({
+			g: [,
+				[[std.nil], 0, 'foo'],
+			],
+		}, $g)
+	)).toEqual(functionType(listType(someTypeVariable()), builtinTypes.int, builtinTypes.string))
+})
+
+test('let f x = 0; f = 1 in f', () => {
+	expect(() => inferProgram(std,
+		letrec$({
+			f: [,
+				[$x, 0],
+				[1],
+			],
+		}, $f)
+	)).toThrow('match')
 })
