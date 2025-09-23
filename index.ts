@@ -23,7 +23,14 @@ export type Kind = undefined | [Kind, Kind]
 export type Type =
 	| { tag: 'namedType', name: string, kind?: Kind }
 	| { tag: 'reify', generic: Type, argument: Type }
-	| { tag: 'typeVariable', link?: Type, name: string, kind?: Kind, level: number }
+	| {
+		tag: 'typeVariable',
+		link?: Type,
+		name: string,
+		kind?: Kind,
+		bounds: string[],
+		level: number,
+	}
 
 export type Pattern =
 	| { tag: 'wildcard' }
@@ -35,6 +42,7 @@ export type Clause = { parameters: Pattern[], value: Expression }
 
 export const builtinTypes = {
 	null: { tag: 'namedType', name: 'null' },
+	bool: { tag: 'namedType', name: 'bool' },
 	int: { tag: 'namedType', name: 'int' },
 	char: { tag: 'namedType', name: 'char' },
 	float: { tag: 'namedType', name: 'float' },
@@ -62,8 +70,14 @@ export function functionType(...types: Type[]): Type {
 	}))
 }
 
-export function newTypeVariable(kind?: Kind): Type & { tag: 'typeVariable' } {
-	return { tag: 'typeVariable', name: crypto.randomUUID(), kind, level: currentLevel }
+export type InterfaceDefinitions = Record<string, {
+	parents: string[],
+	implementations: Type[],
+}>
+let interfaceDefinitions: InterfaceDefinitions
+
+export function newTypeVariable(kind?: Kind, bounds: string[] = []): Type & { tag: 'typeVariable' } {
+	return { tag: 'typeVariable', name: crypto.randomUUID(), kind, bounds, level: currentLevel }
 }
 
 function find(type: Type): Type {
@@ -73,12 +87,16 @@ function find(type: Type): Type {
 	return type
 }
 
+function head(type: Type): Type & { tag: 'namedType' | 'typeVariable' } {
+	return type.tag === 'reify' ? head(type.generic) : type
+}
+
 function unify(a: Type, b: Type): void {
 	a = find(a)
 	b = find(b)
 	if (a.tag === 'typeVariable') {
 		if (b.tag === 'typeVariable' && a.name === b.name) {
-			if (a.level !== b.level) throw new Error('?')
+			if (a !== b) throw new Error('?')
 			return
 		}
 		if (!areEqualKinds(getKind(a), getKind(b))) {
@@ -101,6 +119,30 @@ function unify(a: Type, b: Type): void {
 		})(b)
 		a.link = b
 		a.level = NaN // should not matter, meant for debugging
+		// check bounds
+		if (b.tag === 'typeVariable') {
+			const impliedBounds = [a.bounds.concat(b.bounds)]
+			do {
+				impliedBounds.push(impliedBounds.at(-1)!.flatMap(x => interfaceDefinitions[x].parents))
+			} while (impliedBounds.at(-1)!.length)
+			const newBounds = new Set(impliedBounds.shift())
+			for (const x of impliedBounds.flat()) newBounds.delete(x)
+			b.bounds = [...newBounds]
+		} else {
+			const bHead = head(b)
+			if (bHead.tag === 'namedType') {
+				for (const bound of a.bounds) {
+					const implementation = interfaceDefinitions[bound].implementations.find(i => {
+						const iHead = head(i)
+						return iHead.tag === 'namedType' && iHead.name === bHead.name
+					})
+					if (!implementation) throw new Error('interface not implemented')
+					unify(instantiate(implementation), b)
+				}
+			} else {
+				if (a.bounds.length) throw new Error('unsupported type constraint')
+			}
+		}
 	} else if (b.tag === 'typeVariable') {
 		unify(b, a)
 	} else if (a.tag === 'namedType' && b.tag === 'namedType' && a.name === b.name) {
@@ -144,7 +186,7 @@ function instantiate(type: Type): Type {
 					argument: recurse(type.argument),
 				}
 			case 'typeVariable':
-				return type.level === Infinity ? map[type.name] ??= newTypeVariable(type.kind) : type
+				return type.level === Infinity ? map[type.name] ??= newTypeVariable(type.kind, type.bounds) : type
 		}
 	}(type)
 }
@@ -310,7 +352,12 @@ function recursiveFind(type: Type): Type {
 	}
 }
 
-export function inferProgram(scope: Scope, expression: Expression): Type {
-	currentLevel = 0
-	return recursiveFind(inferExpression(scope, expression))
+export function inferProgram(scope: Scope, interfaces: InterfaceDefinitions, expression: Expression): Type {
+	try {
+		currentLevel = 0
+		interfaceDefinitions = interfaces
+		return recursiveFind(inferExpression(scope, expression))
+	} finally {
+		interfaceDefinitions = {}
+	}
 }
