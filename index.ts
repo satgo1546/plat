@@ -76,8 +76,18 @@ export type InterfaceDefinitions = Record<string, {
 }>
 let interfaceDefinitions: InterfaceDefinitions
 
+const ambiguities = new Set<Type & { tag: 'typeVariable' }>
+
 export function newTypeVariable(kind?: Kind, bounds: string[] = []): Type & { tag: 'typeVariable' } {
-	return { tag: 'typeVariable', name: crypto.randomUUID(), kind, bounds, level: currentLevel }
+	const result: Type & { tag: 'typeVariable' } = {
+		tag: 'typeVariable',
+		name: crypto.randomUUID(),
+		kind,
+		bounds,
+		level: currentLevel,
+	}
+	if (bounds.length) ambiguities.add(result)
+	return result
 }
 
 function find(type: Type): Type {
@@ -119,6 +129,7 @@ function unify(a: Type, b: Type): void {
 		})(b)
 		a.link = b
 		a.level = NaN // should not matter, meant for debugging
+		ambiguities.delete(a)
 		// check bounds
 		if (b.tag === 'typeVariable') {
 			const impliedBounds = [a.bounds.concat(b.bounds)]
@@ -128,6 +139,7 @@ function unify(a: Type, b: Type): void {
 			const newBounds = new Set(impliedBounds.shift())
 			for (const x of impliedBounds.flat()) newBounds.delete(x)
 			b.bounds = [...newBounds]
+			if (newBounds.size) ambiguities.add(b)
 		} else {
 			const bHead = head(b)
 			if (bHead.tag === 'namedType') {
@@ -167,7 +179,10 @@ function generalize(type: Type): Type {
 				argument: generalize(type.argument),
 			}
 		case 'typeVariable':
-			if (type.level > currentLevel) type.level = Infinity
+			if (type.level > currentLevel) {
+				type.level = Infinity
+				ambiguities.delete(type)
+			}
 			return type
 	}
 }
@@ -337,27 +352,18 @@ function inferExpression(scope: Scope, expression: Expression): Type {
 	}
 }
 
-function recursiveFind(type: Type): Type {
-	switch (type.tag) {
-		case 'namedType':
-			return type
-		case 'reify':
-			return {
-				tag: 'reify',
-				generic: recursiveFind(type.generic),
-				argument: recursiveFind(type.argument),
-			}
-		case 'typeVariable':
-			return type.link ? recursiveFind(type.link) : type
-	}
-}
-
 export function inferProgram(scope: Scope, interfaces: InterfaceDefinitions, expression: Expression): Type {
 	try {
 		currentLevel = 0
 		interfaceDefinitions = interfaces
-		return recursiveFind(inferExpression(scope, expression))
+		ambiguities.clear()
+		let result = inferExpression(scope, expression)
+		currentLevel--
+		result = generalize(result)
+		if (ambiguities.size) throw new Error('ambiguity')
+		return result
 	} finally {
 		interfaceDefinitions = {}
+		ambiguities.clear()
 	}
 }

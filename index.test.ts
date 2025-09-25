@@ -1161,8 +1161,50 @@ test('let foo x = let bar s = show x ++ s ++ show x in (bar, bar ", ") in foo', 
 	)))
 })
 
-// test('\\x -> show (read x)', () => {
-// 	expect(() => inferProgram(std, stdi,
-// 		λ('x', $show($read($x)))
-// 	)).toThrow('ambi')
-// })
+test('\\x -> show (read x)', () => {
+	expect(() => inferProgram(std, stdi,
+		λ('x', $show($read($x)))
+	)).toThrow('ambi')
+})
+
+test('let f x = show (read x) in f', () => {
+	expect(() => inferProgram(std, stdi,
+		letrec$({
+			f: [,
+				[$x, $show($read($x))],
+			],
+		}, $f)
+	)).toThrow('ambi')
+})
+
+test('let f x y = show (read x) < show (read y)', () => {
+	expect(() => inferProgram(std, stdi,
+		letrec$({
+			f: [,
+				[$x, $y, call('<', $show($read($x)), $show($read($y)))],
+			],
+		}, $f)
+	)).toThrow('ambi')
+})
+
+test('let f x = read x == []', () => {
+	expect(() => inferProgram(std, stdi,
+		letrec$({
+			f: [,
+				[$x, call('==', $read($x), $nil)],
+			],
+		}, $f)
+	)).toThrow('ambi')
+})
+
+test('show []', () => {
+	expect(() => inferProgram(std, stdi,
+		$show($nil)
+	)).toThrow('ambi')
+})
+
+test('\\x -> read x', () => {
+	expect(inferProgram(std, stdi,
+		λ('x', $read($x))
+	)).toEqual(functionType(builtinTypes.string, someTypeVariable('Read')))
+})
