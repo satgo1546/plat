@@ -102,7 +102,7 @@ export function tokenize(source: string): Token[] {
 }
 
 type Expression =
-	| { type: 'literal', value: number | string }
+	| { type: 'literal', value: number | string | boolean | undefined }
 	| { type: 'grouping', expression: Expression }
 	| { type: 'unary', operator: Token, right: Expression }
 	| { type: 'binary', left: Expression, operator: Token, right: Expression }
@@ -121,7 +121,96 @@ export function pprint(expr: Expression): string {
 	}
 }
 
+export function parse(tokens: Token[]): Expression | undefined {
+	let current = 0
+	function parseError(message: string): never {
+		error(tokens[current].line, `${message} at \`${tokens[current].lexeme}\``)
+		throw parseError
+	}
+	const match = (...types: Token['type'][]) => types.includes(tokens[current]?.type) && !!++current
+	const equality = (): Expression => {
+		let expr = comparison()
+		while (match('==', '!=')) {
+			expr = { type: 'binary', left: expr, operator: tokens[current - 1], right: comparison() }
+		}
+		return expr
+	}
+	const comparison = (): Expression => {
+		let expr = term()
+		while (match('<', '<=', '>', '>=')) {
+			expr = { type: 'binary', left: expr, operator: tokens[current - 1], right: term() }
+		}
+		return expr
+	}
+	const term = (): Expression => {
+		let expr = factor()
+		while (match('+', '-')) {
+			expr = { type: 'binary', left: expr, operator: tokens[current - 1], right: factor() }
+		}
+		return expr
+	}
+	const factor = (): Expression => {
+		let expr = unary()
+		while (match('*', '/')) {
+			expr = { type: 'binary', left: expr, operator: tokens[current - 1], right: unary() }
+		}
+		return expr
+	}
+	const unary = (): Expression => {
+		if (match('!', '-')) {
+			return { type: 'unary', operator: tokens[current - 1], right: unary() }
+		}
+		if (match('+')) {
+			error(tokens[current].line, 'unary `+` is not supported')
+		}
+		return primary()
+	}
+	const primary = (): Expression => {
+		if (match('false')) return { type: 'literal', value: false }
+		if (match('true')) return { type: 'literal', value: true }
+		if (match('nil')) return { type: 'literal', value: undefined }
+		if (match('number', 'string')) return {
+			type: 'literal',
+			value: tokens[current - 1].literal,
+		}
+		if (match('(')) {
+			const expr = expression()
+			if (tokens[current].type !== ')') {
+				parseError('`)` expected after expression')
+			}
+			current++
+			return { type: 'grouping', expression: expr }
+		}
+		parseError('expression expected')
+	}
+	const synchronize = () => {
+		for (current++; ; current++) switch (tokens[current]?.type) {
+			case ';':
+				current++
+				return
+			case 'var':
+			case 'fun':
+			case 'class':
+			case 'if':
+			case 'for':
+			case 'while':
+			case 'print':
+			case 'return':
+			case undefined:
+				return
+		}
+	}
+	const expression = equality
+	try {
+		return expression()
+	} catch (e) {
+		if (e !== parseError) throw e
+	}
+}
+
 export function run(source: string) {
 	hadError = false
-	console.log(tokenize(source))
+	const expr = parse(tokenize(source))
+	if (!expr) return
+	console.log(pprint(expr))
 }

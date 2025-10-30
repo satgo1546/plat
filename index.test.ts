@@ -1,5 +1,5 @@
 import { test, expect } from 'vitest'
-import { pprint, tokenize } from './index.ts'
+import { parse, pprint, tokenize } from './index.ts'
 
 test('tokenizer', () => {
   expect(tokenize(`// this is a comment
@@ -125,4 +125,71 @@ test('pretty printer', () => {
       expression: { type: 'literal', value: 45.67 },
     },
   })).toBe('(* (- 123) (group 45.67))')
+})
+
+test('parser', () => {
+  expect(parse(tokenize('6 / 3 - 1'))).toMatchInlineSnapshot(`
+    {
+      "left": {
+        "left": {
+          "type": "literal",
+          "value": 6,
+        },
+        "operator": {
+          "lexeme": "/",
+          "line": 1,
+          "literal": undefined,
+          "type": "/",
+        },
+        "right": {
+          "type": "literal",
+          "value": 3,
+        },
+        "type": "binary",
+      },
+      "operator": {
+        "lexeme": "-",
+        "line": 1,
+        "literal": undefined,
+        "type": "-",
+      },
+      "right": {
+        "type": "literal",
+        "value": 1,
+      },
+      "type": "binary",
+    }
+  `)
+  expect(parse(tokenize('"a" == "b" == "c"'))).toMatchInlineSnapshot(`
+    {
+      "left": {
+        "left": {
+          "type": "literal",
+          "value": "a",
+        },
+        "operator": {
+          "lexeme": "==",
+          "line": 1,
+          "literal": undefined,
+          "type": "==",
+        },
+        "right": {
+          "type": "literal",
+          "value": "b",
+        },
+        "type": "binary",
+      },
+      "operator": {
+        "lexeme": "==",
+        "line": 1,
+        "literal": undefined,
+        "type": "==",
+      },
+      "right": {
+        "type": "literal",
+        "value": "c",
+      },
+      "type": "binary",
+    }
+  `)
 })
