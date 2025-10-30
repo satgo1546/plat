@@ -1,5 +1,5 @@
 import { test, expect } from 'vitest'
-import { tokenize } from './index.ts'
+import { pprint, tokenize } from './index.ts'
 
 test('tokenizer', () => {
   expect(tokenize(`// this is a comment
@@ -109,4 +109,20 @@ test('tokenizer', () => {
     },
   ]
 `)
+})
+
+test('pretty printer', () => {
+  expect(pprint({
+    type: 'binary',
+    left: {
+      type: 'unary',
+      operator: { type: '-', lexeme: '-', line: 1 },
+      right: { type: 'literal', value: 123 },
+    },
+    operator: { type: '*', lexeme: '*', line: 1 },
+    right: {
+      type: 'grouping',
+      expression: { type: 'literal', value: 45.67 },
+    },
+  })).toBe('(* (- 123) (group 45.67))')
 })

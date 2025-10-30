@@ -101,6 +101,26 @@ export function tokenize(source: string): Token[] {
 	return tokens
 }
 
+type Expression =
+	| { type: 'literal', value: number | string }
+	| { type: 'grouping', expression: Expression }
+	| { type: 'unary', operator: Token, right: Expression }
+	| { type: 'binary', left: Expression, operator: Token, right: Expression }
+
+export function pprint(expr: Expression): string {
+	const parenthesize = (name: string, ...exprs: Expression[]) => `(${[name, ...exprs.map(pprint)].join(' ')})`
+	switch (expr.type) {
+		case 'literal':
+			return String(expr.value ?? 'nil')
+		case 'grouping':
+			return parenthesize('group', expr.expression)
+		case 'unary':
+			return parenthesize(expr.operator.lexeme, expr.right)
+		case 'binary':
+			return parenthesize(expr.operator.lexeme, expr.left, expr.right)
+	}
+}
+
 export function run(source: string) {
 	hadError = false
 	console.log(tokenize(source))
