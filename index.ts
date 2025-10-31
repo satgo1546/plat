@@ -106,10 +106,12 @@ type Expression =
 	| { type: 'grouping', expression: Expression }
 	| { type: 'unary', operator: Token, right: Expression }
 	| { type: 'binary', left: Expression, operator: Token, right: Expression }
+	| { type: 'variable', name: Token }
 
 type Statement =
 	| { type: 'expression', expression: Expression }
 	| { type: 'print', expression: Expression }
+	| { type: 'var', name: Token, initializer?: Expression }
 
 export function pprint(expr: Expression): string {
 	const parenthesize = (name: string, ...exprs: Expression[]) => `(${[name, ...exprs.map(pprint)].join(' ')})`
@@ -122,10 +124,12 @@ export function pprint(expr: Expression): string {
 			return parenthesize(expr.operator.lexeme, expr.right)
 		case 'binary':
 			return parenthesize(expr.operator.lexeme, expr.left, expr.right)
+		case 'variable':
+			return expr.name.lexeme
 	}
 }
 
-export function parse(tokens: Token[]): Statement[] | undefined {
+export function parse(tokens: Token[]): Statement[] {
 	let current = 0
 	function parseError(message: string): never {
 		error(tokens[current].line, `${message} at \`${tokens[current].lexeme}\``)
@@ -134,7 +138,7 @@ export function parse(tokens: Token[]): Statement[] | undefined {
 	const match = (...types: Token['type'][]) => types.includes(tokens[current]?.type) && !!++current
 	const consume = (type: Token['type'], message: string) => {
 		if (tokens[current]?.type !== type) parseError(message)
-		current++
+		return tokens[current++]
 	}
 	const equality = (): Expression => {
 		let expr = comparison()
@@ -181,6 +185,10 @@ export function parse(tokens: Token[]): Statement[] | undefined {
 			type: 'literal',
 			value: tokens[current - 1].literal,
 		}
+		if (match('identifier')) return {
+			type: 'variable',
+			name: tokens[current - 1],
+		}
 		if (match('(')) {
 			const expr = expression()
 			consume(')', '`)` expected after expression')
@@ -216,18 +224,39 @@ export function parse(tokens: Token[]): Statement[] | undefined {
 		consume(';', '`;` expected after expression')
 		return { type: 'expression', expression: value }
 	}
+	const declaration = (): Statement | undefined => {
+		try {
+			if (match('var')) {
+				const name = consume('identifier', 'variable name expected')
+				let initializer
+				if (match('=')) {
+					initializer = expression()
+				}
+				consume(';', '`;` expected after variable declaration')
+				return { type: 'var', name, initializer }
+			}
+			return statement()
+		} catch (e) {
+			if (e !== parseError) throw e
+			synchronize()
+		}
+	}
 	try {
 		const statements: Statement[] = []
 		while (tokens[current]?.type) {
-			statements.push(statement())
+			const stmt = declaration()
+			if (stmt) statements.push(stmt)
 		}
 		return statements
 	} catch (e) {
 		if (e !== parseError) throw e
+		return []
 	}
 }
 
 type LoxObject = undefined | number | string | boolean
+
+let environment: Record<string, LoxObject> = Object.create(null)
 
 function isTruthy(object: LoxObject): boolean {
 	return object !== undefined && object !== false
@@ -324,6 +353,11 @@ export function evaluate(expr: Expression): LoxObject {
 			}
 			throw new RuntimeError(expr.operator, 'bad operand type')
 		}
+		case 'variable':
+			if (!(expr.name.lexeme in environment)) {
+				throw new RuntimeError(expr.name, 'undefined variable')
+			}
+			return environment[expr.name.lexeme]
 		default:
 			expr satisfies never
 	}
@@ -336,6 +370,9 @@ export function execute(stmt: Statement) {
 			break
 		case 'print':
 			console.log(stringify(evaluate(stmt.expression)))
+			break
+		case 'var':
+			environment[stmt.name.lexeme] = stmt.initializer && evaluate(stmt.initializer)
 			break
 		default:
 			stmt satisfies never
@@ -354,7 +391,7 @@ export function run(source: string) {
 	hadError = false
 	hadRuntimeError = false
 	const statements = parse(tokenize(source))
-	if (!statements) return
+	if (hadError) return
 	try {
 		for (const statement of statements) {
 			execute(statement)
