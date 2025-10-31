@@ -107,6 +107,10 @@ type Expression =
 	| { type: 'unary', operator: Token, right: Expression }
 	| { type: 'binary', left: Expression, operator: Token, right: Expression }
 
+type Statement =
+	| { type: 'expression', expression: Expression }
+	| { type: 'print', expression: Expression }
+
 export function pprint(expr: Expression): string {
 	const parenthesize = (name: string, ...exprs: Expression[]) => `(${[name, ...exprs.map(pprint)].join(' ')})`
 	switch (expr.type) {
@@ -121,13 +125,17 @@ export function pprint(expr: Expression): string {
 	}
 }
 
-export function parse(tokens: Token[]): Expression | undefined {
+export function parse(tokens: Token[]): Statement[] | undefined {
 	let current = 0
 	function parseError(message: string): never {
 		error(tokens[current].line, `${message} at \`${tokens[current].lexeme}\``)
 		throw parseError
 	}
 	const match = (...types: Token['type'][]) => types.includes(tokens[current]?.type) && !!++current
+	const consume = (type: Token['type'], message: string) => {
+		if (tokens[current]?.type !== type) parseError(message)
+		current++
+	}
 	const equality = (): Expression => {
 		let expr = comparison()
 		while (match('==', '!=')) {
@@ -175,10 +183,7 @@ export function parse(tokens: Token[]): Expression | undefined {
 		}
 		if (match('(')) {
 			const expr = expression()
-			if (tokens[current].type !== ')') {
-				parseError('`)` expected after expression')
-			}
-			current++
+			consume(')', '`)` expected after expression')
 			return { type: 'grouping', expression: expr }
 		}
 		parseError('expression expected')
@@ -201,8 +206,22 @@ export function parse(tokens: Token[]): Expression | undefined {
 		}
 	}
 	const expression = equality
+	const statement = (): Statement => {
+		if (match('print')) {
+			const value = expression()
+			consume(';', '`;` expected after value to be printed')
+			return { type: 'print', expression: value }
+		}
+		const value = expression()
+		consume(';', '`;` expected after expression')
+		return { type: 'expression', expression: value }
+	}
 	try {
-		return expression()
+		const statements: Statement[] = []
+		while (tokens[current]?.type) {
+			statements.push(statement())
+		}
+		return statements
 	} catch (e) {
 		if (e !== parseError) throw e
 	}
@@ -274,7 +293,7 @@ export function evaluate(expr: Expression): LoxObject {
 					if (typeof left === 'number' && typeof right === 'number') {
 						return left < right
 					} else if (typeof left === 'string' && typeof right === 'string') {
-						return left <right
+						return left < right
 					}
 					break
 				case '<=':
@@ -310,6 +329,19 @@ export function evaluate(expr: Expression): LoxObject {
 	}
 }
 
+export function execute(stmt: Statement) {
+	switch (stmt.type) {
+		case 'expression':
+			evaluate(stmt.expression)
+			break
+		case 'print':
+			console.log(stringify(evaluate(stmt.expression)))
+			break
+		default:
+			stmt satisfies never
+	}
+}
+
 export let hadRuntimeError = false
 class RuntimeError extends Error {
 	token: Token
@@ -321,10 +353,12 @@ class RuntimeError extends Error {
 export function run(source: string) {
 	hadError = false
 	hadRuntimeError = false
-	const expr = parse(tokenize(source))
-	if (!expr) return
+	const statements = parse(tokenize(source))
+	if (!statements) return
 	try {
-		console.log(stringify(evaluate(expr)))
+		for (const statement of statements) {
+			execute(statement)
+		}
 	} catch (e) {
 		if (!(e instanceof RuntimeError)) throw e
 		console.error(`Runtime error: ${e.message} at \`${e.token.lexeme}\` (line ${e.token.line})`)
