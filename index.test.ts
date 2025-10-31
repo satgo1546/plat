@@ -1,5 +1,5 @@
 import { test, expect } from 'vitest'
-import { parse, pprint, tokenize } from './index.ts'
+import { evaluate, parse, pprint, tokenize } from './index.ts'
 
 test('tokenizer', () => {
   expect(tokenize(`// this is a comment
@@ -192,4 +192,31 @@ test('parser', () => {
       "type": "binary",
     }
   `)
+})
+
+test('interpreter', () => {
+  // "scone" + (-4 * 5 - 1)
+  expect(evaluate({
+    type: 'binary',
+    left: { type: 'literal', value: 'scone' },
+    operator: { type: '+', lexeme: '+', line: 1 },
+    right: {
+      type: 'grouping',
+      expression: {
+        type: 'binary',
+        left: {
+          left: {
+            operator: { type: '-', lexeme: '-', line: 1 },
+            right: { type: 'literal', value: 4 },
+            type: 'unary',
+          },
+          operator: { type: '*', lexeme: '*', line: 1 },
+          right: { type: 'literal', value: 5 },
+          type: 'binary',
+        },
+        operator: { type: '-', lexeme: '-', line: 1 },
+        right: { type: 'literal', value: 1 },
+      },
+    },
+  })).toBe('scone-21')
 })

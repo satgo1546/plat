@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { run, hadError } from './index.ts'
+import { run, hadError, hadRuntimeError } from './index.ts'
 import process from 'node:process'
 import fs from 'node:fs'
 import readline from 'node:readline'
@@ -10,6 +10,7 @@ if (process.argv.length > 3) {
 } else if (process.argv.length === 3) {
 	run(fs.readFileSync(process.argv[2], 'utf-8'))
 	if (hadError) process.exitCode = 65
+	if (hadRuntimeError) process.exitCode = 70
 } else {
 	const rl = readline.createInterface(process.stdin, process.stdout)
 	rl.setPrompt('> ')

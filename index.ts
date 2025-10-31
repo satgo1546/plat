@@ -208,9 +208,126 @@ export function parse(tokens: Token[]): Expression | undefined {
 	}
 }
 
+type LoxObject = undefined | number | string | boolean
+
+function isTruthy(object: LoxObject): boolean {
+	return object !== undefined && object !== false
+}
+
+function isEqual(a: LoxObject, b: LoxObject): boolean {
+	// Note that we have NaN == NaN and +0 != -0 in Lox.
+	// https://docs.oracle.com/javase/8/docs/api/java/lang/Double.html#equals-java.lang.Object-
+	return Object.is(a, b)
+}
+
+function stringify(object: LoxObject): string {
+	if (object === undefined) return 'nil'
+	return String(object)
+}
+
+export function evaluate(expr: Expression): LoxObject {
+	switch (expr.type) {
+		case 'literal':
+			return expr.value
+		case 'grouping':
+			return evaluate(expr.expression)
+		case 'unary': {
+			const right = evaluate(expr.right)
+			switch (expr.operator.type) {
+				case '!':
+					return !isTruthy(right)
+				case '-':
+					if (typeof right === 'number') {
+						return -right
+					}
+					break
+			}
+			throw new RuntimeError(expr.operator, 'bad operand type')
+		}
+		case 'binary': {
+			const left = evaluate(expr.left)
+			const right = evaluate(expr.right)
+			switch (expr.operator.type) {
+				case '+':
+					if (typeof left === 'number' && typeof right === 'number') {
+						return left + right
+					} else if (typeof left === 'string' || typeof right === 'string') {
+						return stringify(left) + stringify(right)
+					}
+					break
+				case '-':
+					if (typeof left === 'number' && typeof right === 'number') {
+						return left - right
+					}
+					break
+				case '*':
+					if (typeof left === 'number' && typeof right === 'number') {
+						return left * right
+					}
+					break
+				case '/':
+					if (typeof left === 'number' && typeof right === 'number') {
+						return left / right
+					}
+					break
+				case '<':
+					if (typeof left === 'number' && typeof right === 'number') {
+						return left < right
+					} else if (typeof left === 'string' && typeof right === 'string') {
+						return left <right
+					}
+					break
+				case '<=':
+					if (typeof left === 'number' && typeof right === 'number') {
+						return left <= right
+					} else if (typeof left === 'string' && typeof right === 'string') {
+						return left <= right
+					}
+					break
+				case '>':
+					if (typeof left === 'number' && typeof right === 'number') {
+						return left > right
+					} else if (typeof left === 'string' && typeof right === 'string') {
+						return left > right
+					}
+					break
+				case '>=':
+					if (typeof left === 'number' && typeof right === 'number') {
+						return left >= right
+					} else if (typeof left === 'string' && typeof right === 'string') {
+						return left >= right
+					}
+					break
+				case '==':
+					return isEqual(left, right)
+				case '!=':
+					return !isEqual(left, right)
+			}
+			throw new RuntimeError(expr.operator, 'bad operand type')
+		}
+		default:
+			expr satisfies never
+	}
+}
+
+export let hadRuntimeError = false
+class RuntimeError extends Error {
+	token: Token
+	constructor(token: Token, message: string) {
+		super(message)
+		this.token = token
+	}
+}
 export function run(source: string) {
 	hadError = false
+	hadRuntimeError = false
 	const expr = parse(tokenize(source))
 	if (!expr) return
-	console.log(pprint(expr))
+	try {
+		console.log(stringify(evaluate(expr)))
+	} catch (e) {
+		if (!(e instanceof RuntimeError)) throw e
+		console.error(`Runtime error: ${e.message} at \`${e.token.lexeme}\` (line ${e.token.line})`)
+		hadRuntimeError = true
+	}
 }
