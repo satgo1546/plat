@@ -51,3 +51,12 @@ INPUT
 )) - <<OUTPUT
 3
 OUTPUT
+
+diff <(node main.ts 2>&1 <(cat <<INPUT
+if (1 < 2)
+if (1 > 2) print "NG";
+else print "OK";
+INPUT
+)) - <<OUTPUT
+OK
+OUTPUT

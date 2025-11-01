@@ -114,6 +114,7 @@ type Statement =
 	| { type: 'expression', expression: Expression }
 	| { type: 'print', expression: Expression }
 	| { type: 'var', name: Token, initializer?: Expression }
+	| { type: 'if', condition: Expression, thenBranch: Statement, elseBranch?: Statement }
 
 export function pprint(expr: Expression): string {
 	const parenthesize = (name: string, ...exprs: Expression[]) => `(${[name, ...exprs.map(pprint)].join(' ')})`
@@ -247,6 +248,17 @@ export function parse(tokens: Token[]): Statement[] {
 		}
 		if (match('{')) {
 			return { type: 'block', statements: block() }
+		}
+		if (match('if')) {
+			consume('(', '`(` expected after `if`')
+			const condition = expression()
+			consume(')', '`)` expected after if condition')
+			return {
+				type: 'if',
+				condition,
+				thenBranch: statement(),
+				elseBranch: match('else') ? statement() : undefined,
+			}
 		}
 		const value = expression()
 		consume(';', '`;` expected after expression')
@@ -419,6 +431,13 @@ export function execute(stmt: Statement) {
 			break
 		case 'var':
 			environment[stmt.name.lexeme] = stmt.initializer && evaluate(stmt.initializer)
+			break
+		case 'if':
+			if (isTruthy(evaluate(stmt.condition))) {
+				execute(stmt.thenBranch)
+			} else if (stmt.elseBranch) {
+				execute(stmt.elseBranch)
+			}
 			break
 		default:
 			stmt satisfies never
