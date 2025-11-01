@@ -110,6 +110,7 @@ type Expression =
 	| { type: 'assign', name: Token, value: Expression }
 
 type Statement =
+	| { type: 'block', statements: Statement[] }
 	| { type: 'expression', expression: Expression }
 	| { type: 'print', expression: Expression }
 	| { type: 'var', name: Token, initializer?: Expression }
@@ -229,11 +230,23 @@ export function parse(tokens: Token[]): Statement[] {
 		}
 	}
 	const expression = assignment
+	const block = (): Statement[] => {
+		const statements: Statement[] = []
+		while (current < tokens.length && tokens[current].type !== '}') {
+			const stmt = declaration()
+			if (stmt) statements.push(stmt)
+		}
+		consume('}', '`}` expected after block')
+		return statements
+	}
 	const statement = (): Statement => {
 		if (match('print')) {
 			const value = expression()
 			consume(';', '`;` expected after value to be printed')
 			return { type: 'print', expression: value }
+		}
+		if (match('{')) {
+			return { type: 'block', statements: block() }
 		}
 		const value = expression()
 		consume(';', '`;` expected after expression')
@@ -387,6 +400,17 @@ export function evaluate(expr: Expression): LoxObject {
 
 export function execute(stmt: Statement) {
 	switch (stmt.type) {
+		case 'block':
+			const previous = environment
+			environment = Object.create(environment)
+			try {
+				for (const s of stmt.statements) {
+					execute(s)
+				}
+			} finally {
+				environment = previous
+			}
+			break
 		case 'expression':
 			evaluate(stmt.expression)
 			break
