@@ -71,3 +71,37 @@ hi
 yes
 true
 OUTPUT
+
+diff <(node main.ts 2>&1 <(cat <<INPUT
+var a = 0;
+var temp;
+
+for (var b = 1; a < 10000; b = temp + b) {
+  print a;
+  temp = a;
+  a = b;
+}
+INPUT
+)) - <<OUTPUT
+0
+1
+1
+2
+3
+5
+8
+13
+21
+34
+55
+89
+144
+233
+377
+610
+987
+1597
+2584
+4181
+6765
+OUTPUT

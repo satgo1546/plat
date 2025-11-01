@@ -275,6 +275,43 @@ export function parse(tokens: Token[]): Statement[] {
 				elseBranch: match('else') ? statement() : undefined,
 			}
 		}
+		if (match('for')) {
+			consume('(', '`(` expected after `for`')
+			let initializer: Statement | undefined
+			if (match('var')) {
+				initializer = varDeclaration()
+			} else if (!match(';')) {
+				initializer = { type: 'expression', expression: expression() }
+				consume(';', '`;` expected after for initializer')
+			}
+			let condition: Expression = { type: 'literal', value: true }
+			if (!match(';')) {
+				condition = expression()
+				consume(';', '`;` expected after for condition')
+			}
+			let increment: Expression | undefined
+			if (!match(')')) {
+				increment = expression()
+				consume(')', '`)` expected after for clauses')
+			}
+			let body = statement()
+			if (increment) body = {
+				type: 'block',
+				statements: [
+					body,
+					{ type: 'expression', expression: increment },
+				],
+			}
+			body = { type: 'while', condition, body }
+			if (initializer) body = {
+				type: 'block',
+				statements: [
+					initializer,
+					body,
+				],
+			}
+			return body
+		}
 		if (match('while')) {
 			consume('(', '`(` expected after `while`')
 			const condition = expression()
@@ -289,17 +326,18 @@ export function parse(tokens: Token[]): Statement[] {
 		consume(';', '`;` expected after expression')
 		return { type: 'expression', expression: value }
 	}
+	const varDeclaration = (): Statement => {
+		const name = consume('identifier', 'variable name expected')
+		let initializer
+		if (match('=')) {
+			initializer = expression()
+		}
+		consume(';', '`;` expected after variable declaration')
+		return { type: 'var', name, initializer }
+	}
 	const declaration = (): Statement | undefined => {
 		try {
-			if (match('var')) {
-				const name = consume('identifier', 'variable name expected')
-				let initializer
-				if (match('=')) {
-					initializer = expression()
-				}
-				consume(';', '`;` expected after variable declaration')
-				return { type: 'var', name, initializer }
-			}
+			if (match('var')) return varDeclaration()
 			return statement()
 		} catch (e) {
 			if (e !== parseError) throw e
