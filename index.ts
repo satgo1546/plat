@@ -107,6 +107,7 @@ type Expression =
 	| { type: 'unary', operator: Token, right: Expression }
 	| { type: 'binary', left: Expression, operator: Token, right: Expression }
 	| { type: 'variable', name: Token }
+	| { type: 'assign', name: Token, value: Expression }
 
 type Statement =
 	| { type: 'expression', expression: Expression }
@@ -126,6 +127,8 @@ export function pprint(expr: Expression): string {
 			return parenthesize(expr.operator.lexeme, expr.left, expr.right)
 		case 'variable':
 			return expr.name.lexeme
+		case 'assign':
+			return parenthesize(expr.name.lexeme + '=', expr.value)
 	}
 }
 
@@ -139,6 +142,18 @@ export function parse(tokens: Token[]): Statement[] {
 	const consume = (type: Token['type'], message: string) => {
 		if (tokens[current]?.type !== type) parseError(message)
 		return tokens[current++]
+	}
+	const assignment = (): Expression => {
+		const expr = equality()
+		if (match('=')) {
+			const equals = tokens[current - 1]
+			const value = assignment()
+			if (expr.type === 'variable') {
+				return { type: 'assign', name: expr.name, value }
+			}
+			error(equals.line, 'invalid assignment target')
+		}
+		return expr
 	}
 	const equality = (): Expression => {
 		let expr = comparison()
@@ -213,7 +228,7 @@ export function parse(tokens: Token[]): Statement[] {
 				return
 		}
 	}
-	const expression = equality
+	const expression = assignment
 	const statement = (): Statement => {
 		if (match('print')) {
 			const value = expression()
@@ -358,6 +373,13 @@ export function evaluate(expr: Expression): LoxObject {
 				throw new RuntimeError(expr.name, 'undefined variable')
 			}
 			return environment[expr.name.lexeme]
+		case 'assign':
+			for (let env = environment; env; env = Object.getPrototypeOf(env)) {
+				if (Object.hasOwn(env, expr.name.lexeme)) {
+					return env[expr.name.lexeme] = evaluate(expr.value)
+				}
+			}
+			throw new RuntimeError(expr.name, 'undefined variable')
 		default:
 			expr satisfies never
 	}
