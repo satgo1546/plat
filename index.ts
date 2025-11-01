@@ -115,6 +115,7 @@ type Statement =
 	| { type: 'print', expression: Expression }
 	| { type: 'var', name: Token, initializer?: Expression }
 	| { type: 'if', condition: Expression, thenBranch: Statement, elseBranch?: Statement }
+	| { type: 'while', condition: Expression, body: Statement }
 
 export function pprint(expr: Expression): string {
 	const parenthesize = (name: string, ...exprs: Expression[]) => `(${[name, ...exprs.map(pprint)].join(' ')})`
@@ -272,6 +273,16 @@ export function parse(tokens: Token[]): Statement[] {
 				condition,
 				thenBranch: statement(),
 				elseBranch: match('else') ? statement() : undefined,
+			}
+		}
+		if (match('while')) {
+			consume('(', '`(` expected after `while`')
+			const condition = expression()
+			consume(')', '`)` expected after while condition')
+			return {
+				type: 'while',
+				condition,
+				body: statement(),
 			}
 		}
 		const value = expression()
@@ -457,6 +468,11 @@ export function execute(stmt: Statement) {
 				execute(stmt.thenBranch)
 			} else if (stmt.elseBranch) {
 				execute(stmt.elseBranch)
+			}
+			break
+		case 'while':
+			while (isTruthy(evaluate(stmt.condition))) {
+				execute(stmt.body)
 			}
 			break
 		default:
