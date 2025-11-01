@@ -60,3 +60,14 @@ INPUT
 )) - <<OUTPUT
 OK
 OUTPUT
+
+diff <(node main.ts 2>&1 <(cat <<INPUT
+print "hi" or 2; // "hi".
+print nil or "yes"; // "yes".
+print 1.5 > 2.1 or 1 == 1 and 1 + 1 >= 2;
+INPUT
+)) - <<OUTPUT
+hi
+yes
+true
+OUTPUT

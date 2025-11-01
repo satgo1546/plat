@@ -146,7 +146,7 @@ export function parse(tokens: Token[]): Statement[] {
 		return tokens[current++]
 	}
 	const assignment = (): Expression => {
-		const expr = equality()
+		const expr = or()
 		if (match('=')) {
 			const equals = tokens[current - 1]
 			const value = assignment()
@@ -154,6 +154,20 @@ export function parse(tokens: Token[]): Statement[] {
 				return { type: 'assign', name: expr.name, value }
 			}
 			error(equals.line, 'invalid assignment target')
+		}
+		return expr
+	}
+	const or = (): Expression => {
+		let expr = and()
+		while (match('or')) {
+			expr = { type: 'binary', left: expr, operator: tokens[current - 1], right: and() }
+		}
+		return expr
+	}
+	const and = (): Expression => {
+		let expr = equality()
+		while (match('and')) {
+			expr = { type: 'binary', left: expr, operator: tokens[current - 1], right: equality() }
 		}
 		return expr
 	}
@@ -334,6 +348,12 @@ export function evaluate(expr: Expression): LoxObject {
 		}
 		case 'binary': {
 			const left = evaluate(expr.left)
+			switch (expr.operator.type) {
+				case 'or':
+					return isTruthy(left) ? left : evaluate(expr.right)
+				case 'and':
+					return isTruthy(left) ? evaluate(expr.right) : left
+			}
 			const right = evaluate(expr.right)
 			switch (expr.operator.type) {
 				case '+':
