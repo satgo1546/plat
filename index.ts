@@ -108,14 +108,17 @@ type Expression =
 	| { type: 'binary', left: Expression, operator: Token, right: Expression }
 	| { type: 'variable', name: Token }
 	| { type: 'assign', name: Token, value: Expression }
+	| { type: 'call', callee: Expression, paren: Token, arguments: Expression[] }
 
 type Statement =
 	| { type: 'block', statements: Statement[] }
 	| { type: 'expression', expression: Expression }
 	| { type: 'print', expression: Expression }
 	| { type: 'var', name: Token, initializer?: Expression }
+	| { type: 'function', name: Token, params: Token[], body: Statement[] }
 	| { type: 'if', condition: Expression, thenBranch: Statement, elseBranch?: Statement }
 	| { type: 'while', condition: Expression, body: Statement }
+	| { type: 'return', keyword: Token, value?: Expression }
 
 export function pprint(expr: Expression): string {
 	const parenthesize = (name: string, ...exprs: Expression[]) => `(${[name, ...exprs.map(pprint)].join(' ')})`
@@ -132,6 +135,8 @@ export function pprint(expr: Expression): string {
 			return expr.name.lexeme
 		case 'assign':
 			return parenthesize(expr.name.lexeme + '=', expr.value)
+		case 'call':
+			return parenthesize('call', expr.callee, ...expr.arguments)
 	}
 }
 
@@ -207,7 +212,31 @@ export function parse(tokens: Token[]): Statement[] {
 		if (match('+')) {
 			error(tokens[current].line, 'unary `+` is not supported')
 		}
-		return primary()
+		return call()
+	}
+	const call = (): Expression => {
+		let expr = primary()
+		for (; ;) {
+			if (match('(')) {
+				const args: Expression[] = []
+				do {
+					if (tokens[current].type === ')') break
+					if (args.length >= 255) {
+						error(tokens[current].line, 'too many arguments')
+					}
+					args.push(expression())
+				} while (match(','))
+				expr = {
+					type: 'call',
+					callee: expr,
+					paren: consume(')', '`)` expected after arguments'),
+					arguments: args,
+				}
+			} else {
+				break
+			}
+		}
+		return expr
 	}
 	const primary = (): Expression => {
 		if (match('false')) return { type: 'literal', value: false }
@@ -322,6 +351,15 @@ export function parse(tokens: Token[]): Statement[] {
 				body: statement(),
 			}
 		}
+		if (match('return')) {
+			const keyword = tokens[current - 1]
+			let value: Expression | undefined
+			if (!match(';')) {
+				value = expression()
+				consume(';', '`;` expected after return value')
+			}
+			return { type: 'return', keyword, value }
+		}
 		const value = expression()
 		consume(';', '`;` expected after expression')
 		return { type: 'expression', expression: value }
@@ -335,9 +373,25 @@ export function parse(tokens: Token[]): Statement[] {
 		consume(';', '`;` expected after variable declaration')
 		return { type: 'var', name, initializer }
 	}
+	const funDeclaration = (kind: string): Statement => {
+		const name = consume('identifier', `${kind} name expected`)
+		consume('(', `\`(\` expected after ${kind} name`)
+		const params: Token[] = []
+		do {
+			if (tokens[current].type === ')') break
+			if (params.length >= 255) {
+				error(tokens[current].line, 'too many parameters')
+			}
+			params.push(consume('identifier', 'parameter name expected'))
+		} while (match(','))
+		consume(')', '`)` expected after parameters')
+		consume('{', `\`{\` expected before ${kind} body`)
+		return { type: 'function', name, params, body: block() }
+	}
 	const declaration = (): Statement | undefined => {
 		try {
 			if (match('var')) return varDeclaration()
+			if (match('fun')) return funDeclaration('function')
 			return statement()
 		} catch (e) {
 			if (e !== parseError) throw e
@@ -357,9 +411,50 @@ export function parse(tokens: Token[]): Statement[] {
 	}
 }
 
-type LoxObject = undefined | number | string | boolean
+type LoxObject = undefined | number | string | boolean | LoxCallable
 
-let environment: Record<string, LoxObject> = Object.create(null)
+interface LoxCallable {
+	arity(): number
+	call(args: LoxObject[]): LoxObject
+	toString(): string
+}
+
+class LoxFunction implements LoxCallable {
+	constructor(
+		public declaration: Statement & { type: 'function' },
+		public closure: Environment,
+	) {
+	}
+	arity() {
+		return this.declaration.params.length
+	}
+	call(args: LoxObject[]): LoxObject {
+		const env: Environment = Object.create(this.closure)
+		for (let i = 0; i < this.declaration.params.length; i++) {
+			env[this.declaration.params[i].lexeme] = args[i]
+		}
+		try {
+			executeBlock(this.declaration.body, env)
+		} catch (e) {
+			if (!(e instanceof Return)) throw e
+			return e.value
+		}
+	}
+	toString() {
+		return `<fn ${this.declaration.name.lexeme}>`
+	}
+}
+
+type Environment = Record<string, LoxObject>
+let environment: Environment = {
+	// @ts-ignore
+	__proto__: null,
+	clock: {
+		arity: () => 0,
+		call: () => +new Date / 1000,
+		toString: () => '<native function>',
+	},
+}
 
 function isTruthy(object: LoxObject): boolean {
 	return object !== undefined && object !== false
@@ -474,23 +569,42 @@ export function evaluate(expr: Expression): LoxObject {
 				}
 			}
 			throw new RuntimeError(expr.name, 'undefined variable')
+		case 'call':
+			const callee = evaluate(expr.callee)
+			if (!(typeof callee === 'object' && 'call' in callee)) {
+				throw new RuntimeError(expr.paren, 'bad callee type')
+			}
+			const args = expr.arguments.map(evaluate)
+			if (args.length !== callee.arity()) {
+				throw new RuntimeError(expr.paren, `${callee.arity()}`)
+			}
+			return callee.call(args)
 		default:
 			expr satisfies never
+	}
+}
+
+function executeBlock(statements: Statement[], env: Environment) {
+	const previous = environment
+	environment = env
+	try {
+		for (const s of statements) {
+			execute(s)
+		}
+	} finally {
+		environment = previous
+	}
+}
+
+class Return {
+	constructor(public value: LoxObject) {
 	}
 }
 
 export function execute(stmt: Statement) {
 	switch (stmt.type) {
 		case 'block':
-			const previous = environment
-			environment = Object.create(environment)
-			try {
-				for (const s of stmt.statements) {
-					execute(s)
-				}
-			} finally {
-				environment = previous
-			}
+			executeBlock(stmt.statements, Object.create(environment))
 			break
 		case 'expression':
 			evaluate(stmt.expression)
@@ -500,6 +614,9 @@ export function execute(stmt: Statement) {
 			break
 		case 'var':
 			environment[stmt.name.lexeme] = stmt.initializer && evaluate(stmt.initializer)
+			break
+		case 'function':
+			environment[stmt.name.lexeme] = new LoxFunction(stmt, environment)
 			break
 		case 'if':
 			if (isTruthy(evaluate(stmt.condition))) {
@@ -513,6 +630,8 @@ export function execute(stmt: Statement) {
 				execute(stmt.body)
 			}
 			break
+		case 'return':
+			throw new Return(stmt.value && evaluate(stmt.value))
 		default:
 			stmt satisfies never
 	}

@@ -1,6 +1,10 @@
 #!/bin/bash
 set -e
 
+node() {
+  deno -A $*
+}
+
 diff <(node main.ts 2>&1 <(cat <<INPUT
 print "scone" + (-4 * 5 - 1);
 INPUT
@@ -104,4 +108,95 @@ INPUT
 2584
 4181
 6765
+OUTPUT
+
+diff <(node main.ts 2>&1 <(cat <<INPUT
+fun sayHi(first, last) {
+  print "Hi, " + first + " " + last + "!";
+}
+
+sayHi("Dear", "Reader");
+
+fun add(a, b, c) {
+  print a + b + c;
+}
+
+add(1, 2, 3);
+
+fun add(a, b) {
+  print a + b;
+}
+
+print add; // "<fn add>".
+
+fun count(n) {
+  if (n > 1) count(n - 1);
+  print n;
+}
+
+count(3);
+
+fun procedure() {
+  print "don't return anything";
+}
+
+var result = procedure();
+print result; // ?
+
+fun fib(n) {
+  if (n <= 1) return n;
+  return fib(n - 2) + fib(n - 1);
+}
+
+for (var i = 0; i < 20; i = i + 1) {
+  print fib(i);
+}
+
+fun makeCounter() {
+  var i = 0;
+  fun count() {
+    i = i + 1;
+    print i;
+  }
+
+  return count;
+}
+
+var counter = makeCounter();
+print counter;
+counter(); // "1".
+counter(); // "2".
+INPUT
+)) - <<OUTPUT
+Hi, Dear Reader!
+6
+<fn add>
+1
+2
+3
+don't return anything
+nil
+0
+1
+1
+2
+3
+5
+8
+13
+21
+34
+55
+89
+144
+233
+377
+610
+987
+1597
+2584
+4181
+<fn count>
+1
+2
 OUTPUT
