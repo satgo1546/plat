@@ -248,11 +248,18 @@ var bagel = Bagel();
 print bagel; // Prints "Bagel instance".
 bagel.e = 114514;
 print bagel.e;
-print bagel.i;
+
+class Bacon {
+  eat() {
+    print "Crunch crunch crunch!";
+  }
+}
+
+Bacon().eat(); // Prints "Crunch crunch crunch!".
 INPUT
 )) - <<OUTPUT
 DevonshireCream
 Bagel instance
 114514
-Runtime error: undefined property at \`i\` (line 13)
+Crunch crunch crunch!
 OUTPUT

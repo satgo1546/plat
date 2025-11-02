@@ -438,7 +438,7 @@ export function parse(tokens: Token[]): Statement[] {
 
 function resolve(statements: Statement[]) {
 	const scopes: Record<string, boolean>[] = []
-	let currentFunction: undefined | 'function'
+	let currentFunction: undefined | 'function' | 'method'
 	const beginScope = () => void scopes.push(Object.create(null))
 	const endScope = () => void scopes.pop()
 	const declare = (name: Token) => {
@@ -502,6 +502,7 @@ function resolve(statements: Statement[]) {
 			case 'class':
 				declare(x.name)
 				define(x.name)
+				x.methods.forEach(f => resolveFunction(f, 'method'))
 				break
 			case 'expression':
 			case 'print':
@@ -587,6 +588,7 @@ class LoxFunction implements LoxCallable {
 class LoxClass implements LoxCallable {
 	constructor(
 		public name: string,
+		public methods: Record<string, LoxFunction>,
 	) {
 	}
 	arity() {
@@ -607,6 +609,9 @@ class LoxInstance {
 	get(name: Token) {
 		if (name.lexeme in this.fields) {
 			return this.fields[name.lexeme]
+		}
+		if (name.lexeme in this.klass.methods) {
+			return this.klass.methods[name.lexeme]
 		}
 		throw new RuntimeError(name, 'undefined property')
 	}
@@ -819,7 +824,11 @@ export function execute(stmt: Statement) {
 			environment[stmt.name.lexeme] = new LoxFunction(stmt, environment)
 			break
 		case 'class':
-			environment[stmt.name.lexeme] = new LoxClass(stmt.name.lexeme)
+			const methods: Record<string, LoxFunction> = Object.create(null)
+			for (const method of stmt.methods) {
+				methods[method.name.lexeme] = new LoxFunction(method, environment)
+			}
+			environment[stmt.name.lexeme] = new LoxClass(stmt.name.lexeme, methods)
 			break
 		case 'if':
 			if (isTruthy(evaluate(stmt.condition))) {
