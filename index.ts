@@ -445,7 +445,7 @@ export function parse(tokens: Token[]): Statement[] {
 
 function resolve(statements: Statement[]) {
 	const scopes: Record<string, boolean>[] = []
-	let currentFunction: undefined | 'function' | 'method'
+	let currentFunction: undefined | 'function' | 'initializer' | 'method'
 	let currentClass: undefined | 'class'
 	const beginScope = () => void scopes.push(Object.create(null))
 	const endScope = () => void scopes.pop()
@@ -514,7 +514,9 @@ function resolve(statements: Statement[]) {
 				define(x.name)
 				beginScope()
 				scopes[scopes.length - 1]['this'] = true
-				x.methods.forEach(f => resolveFunction(f, 'method'))
+				for (const f of x.methods) {
+					resolveFunction(f, f.name.lexeme === 'init' ? 'initializer' : 'method')
+				}
 				endScope()
 				currentClass = enclosingClass
 				break
@@ -543,7 +545,12 @@ function resolve(statements: Statement[]) {
 				if (!currentFunction) {
 					error(x.keyword.line, 'nowhere to return')
 				}
-				x.value && resolve(x.value)
+				if (x.value) {
+					if (currentFunction === 'initializer') {
+						error(x.keyword.line, 'cannot return from initializer')
+					}
+					resolve(x.value)
+				}
 				break
 			case 'literal':
 				break
@@ -584,6 +591,7 @@ class LoxFunction implements LoxCallable {
 	constructor(
 		public declaration: Statement & { type: 'function' },
 		public closure: Environment,
+		public isInitializer: boolean,
 	) {
 	}
 	arity() {
@@ -598,15 +606,16 @@ class LoxFunction implements LoxCallable {
 			executeBlock(this.declaration.body, env)
 		} catch (e) {
 			if (!(e instanceof Return)) throw e
-			return e.value
+			if (!this.isInitializer) return e.value
 		}
+		if (this.isInitializer) return this.closure['this']
 	}
 	bind(instance: LoxInstance): LoxFunction {
 		return new LoxFunction(this.declaration, {
 			// @ts-ignore
 			__proto__: this.closure,
 			this: instance,
-		})
+		}, this.isInitializer)
 	}
 	toString() {
 		return `<fn ${this.declaration.name.lexeme}>`
@@ -620,10 +629,14 @@ class LoxClass implements LoxCallable {
 	) {
 	}
 	arity() {
-		return 0
+		return this.methods['init']?.arity() ?? 0
 	}
 	call(args: LoxObject[]): LoxObject {
-		return new LoxInstance(this)
+		const instance = new LoxInstance(this)
+		if ('init' in this.methods) {
+			this.methods['init'].bind(instance).call(args)
+		}
+		return instance
 	}
 	toString() {
 		return this.name
@@ -845,12 +858,12 @@ export function execute(stmt: Statement) {
 			environment[stmt.name.lexeme] = stmt.initializer && evaluate(stmt.initializer)
 			break
 		case 'function':
-			environment[stmt.name.lexeme] = new LoxFunction(stmt, environment)
+			environment[stmt.name.lexeme] = new LoxFunction(stmt, environment, false)
 			break
 		case 'class':
 			const methods: Record<string, LoxFunction> = Object.create(null)
 			for (const method of stmt.methods) {
-				methods[method.name.lexeme] = new LoxFunction(method, environment)
+				methods[method.name.lexeme] = new LoxFunction(method, environment, method.name.lexeme === 'init')
 			}
 			environment[stmt.name.lexeme] = new LoxClass(stmt.name.lexeme, methods)
 			break

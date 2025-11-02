@@ -296,6 +296,16 @@ class Thing {
 
 var callback = Thing().getCallback();
 callback();
+
+class Foo {
+  init() {
+    print this + " init";
+    return;
+  }
+}
+
+var foo = Foo();
+print foo.init();
 INPUT
 )) - <<OUTPUT
 DevonshireCream
@@ -305,4 +315,7 @@ Crunch crunch crunch!
 Egotist instance
 The German chocolate cake is delicious!
 Thing instance
+Foo instance init
+Foo instance init
+Foo instance
 OUTPUT
