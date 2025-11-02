@@ -234,3 +234,25 @@ INPUT
 )) - <<OUTPUT
 Error: nowhere to return (line 1)
 OUTPUT
+
+diff <(node main.ts 2>&1 <(cat <<INPUT
+class DevonshireCream {
+  serveOn() {
+    return "Scones";
+  }
+}
+
+print DevonshireCream; // Prints "DevonshireCream".
+class Bagel {}
+var bagel = Bagel();
+print bagel; // Prints "Bagel instance".
+bagel.e = 114514;
+print bagel.e;
+print bagel.i;
+INPUT
+)) - <<OUTPUT
+DevonshireCream
+Bagel instance
+114514
+Runtime error: undefined property at \`i\` (line 13)
+OUTPUT

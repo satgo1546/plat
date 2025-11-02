@@ -109,6 +109,8 @@ type Expression =
 	| { type: 'variable', name: Token }
 	| { type: 'assign', name: Token, value: Expression }
 	| { type: 'call', callee: Expression, paren: Token, arguments: Expression[] }
+	| { type: 'get', object: Expression, name: Token }
+	| { type: 'set', object: Expression, name: Token, value: Expression }
 
 type Statement =
 	| { type: 'block', statements: Statement[] }
@@ -116,6 +118,7 @@ type Statement =
 	| { type: 'print', expression: Expression }
 	| { type: 'var', name: Token, initializer?: Expression }
 	| { type: 'function', name: Token, params: Token[], body: Statement[] }
+	| { type: 'class', name: Token, methods: (Statement & { type: 'function' })[] }
 	| { type: 'if', condition: Expression, thenBranch: Statement, elseBranch?: Statement }
 	| { type: 'while', condition: Expression, body: Statement }
 	| { type: 'return', keyword: Token, value?: Expression }
@@ -137,6 +140,10 @@ export function pprint(expr: Expression): string {
 			return parenthesize(expr.name.lexeme + '=', expr.value)
 		case 'call':
 			return parenthesize('call', expr.callee, ...expr.arguments)
+		case 'get':
+			return parenthesize('.' + expr.name, expr.object)
+		case 'set':
+			return parenthesize('.' + expr.name + '=', expr.object)
 	}
 }
 
@@ -158,6 +165,8 @@ export function parse(tokens: Token[]): Statement[] {
 			const value = assignment()
 			if (expr.type === 'variable') {
 				return { type: 'assign', name: expr.name, value }
+			} else if (expr.type === 'get') {
+				return { type: 'set', object: expr.object, name: expr.name, value }
 			}
 			error(equals.line, 'invalid assignment target')
 		}
@@ -231,6 +240,12 @@ export function parse(tokens: Token[]): Statement[] {
 					callee: expr,
 					paren: consume(')', '`)` expected after arguments'),
 					arguments: args,
+				}
+			} else if (match('.')) {
+				expr = {
+					type: 'get',
+					object: expr,
+					name: consume('identifier', 'property name expected after `.`'),
 				}
 			} else {
 				break
@@ -373,7 +388,7 @@ export function parse(tokens: Token[]): Statement[] {
 		consume(';', '`;` expected after variable declaration')
 		return { type: 'var', name, initializer }
 	}
-	const funDeclaration = (kind: string): Statement => {
+	const funDeclaration = (kind: string): Statement & { type: 'function' } => {
 		const name = consume('identifier', `${kind} name expected`)
 		consume('(', `\`(\` expected after ${kind} name`)
 		const params: Token[] = []
@@ -392,6 +407,16 @@ export function parse(tokens: Token[]): Statement[] {
 		try {
 			if (match('var')) return varDeclaration()
 			if (match('fun')) return funDeclaration('function')
+			if (match('class')) {
+				const name = consume('identifier', 'class name expected')
+				consume('{', '`{` expected before class body')
+				const methods: (Statement & { type: 'function' })[] = []
+				while (current < tokens.length && tokens[current].type !== '}') {
+					methods.push(funDeclaration('method'))
+				}
+				consume('}', '`}` expected after class body')
+				return { type: 'class', name, methods }
+			}
 			return statement()
 		} catch (e) {
 			if (e !== parseError) throw e
@@ -474,6 +499,10 @@ function resolve(statements: Statement[]) {
 				define(x.name)
 				resolveFunction(x, 'function')
 				break
+			case 'class':
+				declare(x.name)
+				define(x.name)
+				break
 			case 'expression':
 			case 'print':
 			case 'grouping':
@@ -507,6 +536,13 @@ function resolve(statements: Statement[]) {
 				resolve(x.callee)
 				x.arguments.forEach(resolve)
 				break
+			case 'get':
+				resolve(x.object)
+				break
+			case 'set':
+				resolve(x.object)
+				resolve(x.value)
+				break
 			default:
 				x satisfies never
 		}
@@ -514,7 +550,7 @@ function resolve(statements: Statement[]) {
 	statements.forEach(resolve)
 }
 
-type LoxObject = undefined | number | string | boolean | LoxCallable
+type LoxObject = undefined | number | string | boolean | LoxCallable | LoxInstance
 
 interface LoxCallable {
 	arity(): number
@@ -545,6 +581,40 @@ class LoxFunction implements LoxCallable {
 	}
 	toString() {
 		return `<fn ${this.declaration.name.lexeme}>`
+	}
+}
+
+class LoxClass implements LoxCallable {
+	constructor(
+		public name: string,
+	) {
+	}
+	arity() {
+		return 0
+	}
+	call(args: LoxObject[]): LoxObject {
+		return new LoxInstance(this)
+	}
+	toString() {
+		return this.name
+	}
+}
+
+class LoxInstance {
+	fields: Record<string, LoxObject> = Object.create(null)
+	constructor(readonly klass: LoxClass) {
+	}
+	get(name: Token) {
+		if (name.lexeme in this.fields) {
+			return this.fields[name.lexeme]
+		}
+		throw new RuntimeError(name, 'undefined property')
+	}
+	set(name: Token, value: LoxObject) {
+		this.fields[name.lexeme] = value
+	}
+	toString() {
+		return `${this.klass.name} instance`
 	}
 }
 
@@ -693,6 +763,22 @@ export function evaluate(expr: Expression): LoxObject {
 				throw new RuntimeError(expr.paren, `${callee.arity()}`)
 			}
 			return callee.call(args)
+		case 'get': {
+			const object = evaluate(expr.object)
+			if (!(object instanceof LoxInstance)) {
+				throw new RuntimeError(expr.name, 'only instances have properties')
+			}
+			return object.get(expr.name)
+		}
+		case 'set': {
+			const object = evaluate(expr.object)
+			if (!(object instanceof LoxInstance)) {
+				throw new RuntimeError(expr.name, 'only instances have properties')
+			}
+			const value = evaluate(expr.value)
+			object.set(expr.name, value)
+			return value
+		}
 		default:
 			expr satisfies never
 	}
@@ -731,6 +817,9 @@ export function execute(stmt: Statement) {
 			break
 		case 'function':
 			environment[stmt.name.lexeme] = new LoxFunction(stmt, environment)
+			break
+		case 'class':
+			environment[stmt.name.lexeme] = new LoxClass(stmt.name.lexeme)
 			break
 		case 'if':
 			if (isTruthy(evaluate(stmt.condition))) {
