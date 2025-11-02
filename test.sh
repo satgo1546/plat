@@ -53,7 +53,7 @@ var a = 1;
 }
 INPUT
 )) - <<OUTPUT
-3
+Error: local variable initializer accesses itself (line 3)
 OUTPUT
 
 diff <(node main.ts 2>&1 <(cat <<INPUT
@@ -199,4 +199,38 @@ nil
 <fn count>
 1
 2
+OUTPUT
+
+diff <(node main.ts 2>&1 <(cat <<INPUT
+var a = "global";
+{
+  fun showA() {
+    print a;
+  }
+
+  showA();
+  var a = "block";
+  showA();
+}
+INPUT
+)) - <<OUTPUT
+global
+global
+OUTPUT
+
+diff <(node main.ts 2>&1 <(cat <<INPUT
+fun bad() {
+  var a = "first";
+  var a = "second";
+}
+INPUT
+)) - <<OUTPUT
+Error: variable already declared (line 3)
+OUTPUT
+
+diff <(node main.ts 2>&1 <(cat <<INPUT
+return "at top level";
+INPUT
+)) - <<OUTPUT
+Error: nowhere to return (line 1)
 OUTPUT

@@ -411,6 +411,109 @@ export function parse(tokens: Token[]): Statement[] {
 	}
 }
 
+function resolve(statements: Statement[]) {
+	const scopes: Record<string, boolean>[] = []
+	let currentFunction: undefined | 'function'
+	const beginScope = () => void scopes.push(Object.create(null))
+	const endScope = () => void scopes.pop()
+	const declare = (name: Token) => {
+		if (!scopes.length) return
+		if (name.lexeme in scopes[scopes.length - 1]) {
+			error(name.line, 'variable already declared')
+		}
+		scopes[scopes.length - 1][name.lexeme] = false
+	}
+	const define = (name: Token) => {
+		if (!scopes.length) return
+		scopes[scopes.length - 1][name.lexeme] = true
+	}
+	const resolveLocal = (expr: Expression, name: Token) => {
+		for (let i = scopes.length - 1; i >= 0; i--) {
+			if (name.lexeme in scopes[i]) {
+				locals.set(expr, scopes.length - 1 - i)
+				return
+			}
+		}
+	}
+	const resolveFunction = (func: Statement & { type: 'function' }, type: typeof currentFunction) => {
+		const enclosingFunction = currentFunction
+		currentFunction = type
+		beginScope()
+		for (const param of func.params) {
+			declare(param)
+			define(param)
+		}
+		func.body.forEach(resolve)
+		endScope()
+		currentFunction = enclosingFunction
+	}
+	function resolve(x: Statement | Expression) {
+		switch (x.type) {
+			case 'block':
+				beginScope()
+				x.statements.forEach(resolve)
+				endScope()
+				break
+			case 'var':
+				declare(x.name)
+				x.initializer && resolve(x.initializer)
+				define(x.name)
+				break
+			case 'variable':
+				if (scopes[scopes.length - 1]?.[x.name.lexeme] === false) {
+					error(x.name.line, 'local variable initializer accesses itself')
+				}
+				resolveLocal(x, x.name)
+				break
+			case 'assign':
+				resolve(x.value)
+				resolveLocal(x, x.name)
+				break
+			case 'function':
+				declare(x.name)
+				define(x.name)
+				resolveFunction(x, 'function')
+				break
+			case 'expression':
+			case 'print':
+			case 'grouping':
+				resolve(x.expression)
+				break
+			case 'if':
+				resolve(x.condition)
+				resolve(x.thenBranch)
+				x.elseBranch && resolve(x.elseBranch)
+				break
+			case 'while':
+				resolve(x.condition)
+				resolve(x.body)
+				break
+			case 'return':
+				if (!currentFunction) {
+					error(x.keyword.line, 'nowhere to return')
+				}
+				x.value && resolve(x.value)
+				break
+			case 'literal':
+				break
+			case 'unary':
+				resolve(x.right)
+				break
+			case 'binary':
+				resolve(x.left)
+				resolve(x.right)
+				break
+			case 'call':
+				resolve(x.callee)
+				x.arguments.forEach(resolve)
+				break
+			default:
+				x satisfies never
+		}
+	}
+	statements.forEach(resolve)
+}
+
 type LoxObject = undefined | number | string | boolean | LoxCallable
 
 interface LoxCallable {
@@ -455,6 +558,7 @@ let environment: Environment = {
 		toString: () => '<native function>',
 	},
 }
+const locals = new WeakMap<Expression, number>
 
 function isTruthy(object: LoxObject): boolean {
 	return object !== undefined && object !== false
@@ -557,18 +661,28 @@ export function evaluate(expr: Expression): LoxObject {
 			}
 			throw new RuntimeError(expr.operator, 'bad operand type')
 		}
-		case 'variable':
-			if (!(expr.name.lexeme in environment)) {
+		case 'variable': {
+			let env = environment
+			for (let i = locals.get(expr) ?? Infinity; i && Object.getPrototypeOf(env); i--) {
+				env = Object.getPrototypeOf(env)
+			}
+			if (!Object.hasOwn(env, expr.name.lexeme)) {
+				// possible for global variables only
 				throw new RuntimeError(expr.name, 'undefined variable')
 			}
-			return environment[expr.name.lexeme]
-		case 'assign':
-			for (let env = environment; env; env = Object.getPrototypeOf(env)) {
-				if (Object.hasOwn(env, expr.name.lexeme)) {
-					return env[expr.name.lexeme] = evaluate(expr.value)
-				}
+			return env[expr.name.lexeme]
+		}
+		case 'assign': {
+			let env = environment
+			for (let i = locals.get(expr) ?? Infinity; i && Object.getPrototypeOf(env); i--) {
+				env = Object.getPrototypeOf(env)
 			}
-			throw new RuntimeError(expr.name, 'undefined variable')
+			if (!Object.hasOwn(env, expr.name.lexeme)) {
+				// possible for global variables only
+				throw new RuntimeError(expr.name, 'undefined variable')
+			}
+			return env[expr.name.lexeme] = evaluate(expr.value)
+		}
 		case 'call':
 			const callee = evaluate(expr.callee)
 			if (!(typeof callee === 'object' && 'call' in callee)) {
@@ -649,6 +763,8 @@ export function run(source: string) {
 	hadError = false
 	hadRuntimeError = false
 	const statements = parse(tokenize(source))
+	if (hadError) return
+	resolve(statements)
 	if (hadError) return
 	try {
 		for (const statement of statements) {
