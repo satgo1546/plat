@@ -236,6 +236,13 @@ Error: nowhere to return (line 1)
 OUTPUT
 
 diff <(node main.ts 2>&1 <(cat <<INPUT
+print this;
+INPUT
+)) - <<OUTPUT
+Error: stray \`this\` (line 1)
+OUTPUT
+
+diff <(node main.ts 2>&1 <(cat <<INPUT
 class DevonshireCream {
   serveOn() {
     return "Scones";
@@ -256,10 +263,46 @@ class Bacon {
 }
 
 Bacon().eat(); // Prints "Crunch crunch crunch!".
+
+class Egotist {
+  speak() {
+    print this;
+  }
+}
+
+var method = Egotist().speak;
+method();
+
+class Cake {
+  taste() {
+    var adjective = "delicious";
+    print "The " + this.flavor + " cake is " + adjective + "!";
+  }
+}
+
+var cake = Cake();
+cake.flavor = "German chocolate";
+cake.taste(); // Prints "The German chocolate cake is delicious!".
+
+class Thing {
+  getCallback() {
+    fun localFunction() {
+      print this;
+    }
+
+    return localFunction;
+  }
+}
+
+var callback = Thing().getCallback();
+callback();
 INPUT
 )) - <<OUTPUT
 DevonshireCream
 Bagel instance
 114514
 Crunch crunch crunch!
+Egotist instance
+The German chocolate cake is delicious!
+Thing instance
 OUTPUT

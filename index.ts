@@ -108,6 +108,7 @@ type Expression =
 	| { type: 'binary', left: Expression, operator: Token, right: Expression }
 	| { type: 'variable', name: Token }
 	| { type: 'assign', name: Token, value: Expression }
+	| { type: 'this', keyword: Token }
 	| { type: 'call', callee: Expression, paren: Token, arguments: Expression[] }
 	| { type: 'get', object: Expression, name: Token }
 	| { type: 'set', object: Expression, name: Token, value: Expression }
@@ -138,6 +139,8 @@ export function pprint(expr: Expression): string {
 			return expr.name.lexeme
 		case 'assign':
 			return parenthesize(expr.name.lexeme + '=', expr.value)
+		case 'this':
+			return 'this'
 		case 'call':
 			return parenthesize('call', expr.callee, ...expr.arguments)
 		case 'get':
@@ -260,6 +263,10 @@ export function parse(tokens: Token[]): Statement[] {
 		if (match('number', 'string')) return {
 			type: 'literal',
 			value: tokens[current - 1].literal,
+		}
+		if (match('this')) return {
+			type: 'this',
+			keyword: tokens[current - 1],
 		}
 		if (match('identifier')) return {
 			type: 'variable',
@@ -439,6 +446,7 @@ export function parse(tokens: Token[]): Statement[] {
 function resolve(statements: Statement[]) {
 	const scopes: Record<string, boolean>[] = []
 	let currentFunction: undefined | 'function' | 'method'
+	let currentClass: undefined | 'class'
 	const beginScope = () => void scopes.push(Object.create(null))
 	const endScope = () => void scopes.pop()
 	const declare = (name: Token) => {
@@ -500,9 +508,22 @@ function resolve(statements: Statement[]) {
 				resolveFunction(x, 'function')
 				break
 			case 'class':
+				const enclosingClass = currentClass
+				currentClass = 'class'
 				declare(x.name)
 				define(x.name)
+				beginScope()
+				scopes[scopes.length - 1]['this'] = true
 				x.methods.forEach(f => resolveFunction(f, 'method'))
+				endScope()
+				currentClass = enclosingClass
+				break
+			case 'this':
+				if (!currentClass) {
+					error(x.keyword.line, 'stray `this`')
+					break
+				}
+				resolveLocal(x, x.keyword)
 				break
 			case 'expression':
 			case 'print':
@@ -580,6 +601,13 @@ class LoxFunction implements LoxCallable {
 			return e.value
 		}
 	}
+	bind(instance: LoxInstance): LoxFunction {
+		return new LoxFunction(this.declaration, {
+			// @ts-ignore
+			__proto__: this.closure,
+			this: instance,
+		})
+	}
 	toString() {
 		return `<fn ${this.declaration.name.lexeme}>`
 	}
@@ -611,7 +639,7 @@ class LoxInstance {
 			return this.fields[name.lexeme]
 		}
 		if (name.lexeme in this.klass.methods) {
-			return this.klass.methods[name.lexeme]
+			return this.klass.methods[name.lexeme].bind(this)
 		}
 		throw new RuntimeError(name, 'undefined property')
 	}
@@ -648,6 +676,18 @@ function isEqual(a: LoxObject, b: LoxObject): boolean {
 function stringify(object: LoxObject): string {
 	if (object === undefined) return 'nil'
 	return String(object)
+}
+
+function lookUpVariable(name: Token, expr: Expression): Environment {
+	let env = environment
+	for (let i = locals.get(expr) ?? Infinity; i && Object.getPrototypeOf(env); i--) {
+		env = Object.getPrototypeOf(env)
+	}
+	if (!Object.hasOwn(env, name.lexeme)) {
+		// possible for global variables only
+		throw new RuntimeError(name, 'undefined variable')
+	}
+	return env
 }
 
 export function evaluate(expr: Expression): LoxObject {
@@ -736,28 +776,12 @@ export function evaluate(expr: Expression): LoxObject {
 			}
 			throw new RuntimeError(expr.operator, 'bad operand type')
 		}
-		case 'variable': {
-			let env = environment
-			for (let i = locals.get(expr) ?? Infinity; i && Object.getPrototypeOf(env); i--) {
-				env = Object.getPrototypeOf(env)
-			}
-			if (!Object.hasOwn(env, expr.name.lexeme)) {
-				// possible for global variables only
-				throw new RuntimeError(expr.name, 'undefined variable')
-			}
-			return env[expr.name.lexeme]
-		}
-		case 'assign': {
-			let env = environment
-			for (let i = locals.get(expr) ?? Infinity; i && Object.getPrototypeOf(env); i--) {
-				env = Object.getPrototypeOf(env)
-			}
-			if (!Object.hasOwn(env, expr.name.lexeme)) {
-				// possible for global variables only
-				throw new RuntimeError(expr.name, 'undefined variable')
-			}
-			return env[expr.name.lexeme] = evaluate(expr.value)
-		}
+		case 'variable':
+			return lookUpVariable(expr.name, expr)[expr.name.lexeme]
+		case 'assign':
+			return lookUpVariable(expr.name, expr)[expr.name.lexeme] = evaluate(expr.value)
+		case 'this':
+			return lookUpVariable(expr.keyword, expr)[expr.keyword.lexeme]
 		case 'call':
 			const callee = evaluate(expr.callee)
 			if (!(typeof callee === 'object' && 'call' in callee)) {
