@@ -306,6 +306,16 @@ class Foo {
 
 var foo = Foo();
 print foo.init();
+
+class Doughnut {
+  cook() {
+    print "Fry until golden brown.";
+  }
+}
+
+class BostonCream < Doughnut {}
+
+BostonCream().cook();
 INPUT
 )) - <<OUTPUT
 DevonshireCream
@@ -318,4 +328,14 @@ Thing instance
 Foo instance init
 Foo instance init
 Foo instance
+Fry until golden brown.
+OUTPUT
+
+diff <(node main.ts 2>&1 <(cat <<INPUT
+var NotAClass = "I am totally not a class";
+
+class Subclass < NotAClass {} // ?!
+INPUT
+)) - <<OUTPUT
+Runtime error: bad superclass at \`NotAClass\` (line 3)
 OUTPUT

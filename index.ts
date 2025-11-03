@@ -119,7 +119,7 @@ type Statement =
 	| { type: 'print', expression: Expression }
 	| { type: 'var', name: Token, initializer?: Expression }
 	| { type: 'function', name: Token, params: Token[], body: Statement[] }
-	| { type: 'class', name: Token, methods: (Statement & { type: 'function' })[] }
+	| { type: 'class', name: Token, superclass?: Expression & { type: 'variable' }, methods: (Statement & { type: 'function' })[] }
 	| { type: 'if', condition: Expression, thenBranch: Statement, elseBranch?: Statement }
 	| { type: 'while', condition: Expression, body: Statement }
 	| { type: 'return', keyword: Token, value?: Expression }
@@ -416,13 +416,20 @@ export function parse(tokens: Token[]): Statement[] {
 			if (match('fun')) return funDeclaration('function')
 			if (match('class')) {
 				const name = consume('identifier', 'class name expected')
+				let superclass: Expression & { type: 'variable' } | undefined
+				if (match('<')) {
+					superclass = {
+						type: 'variable',
+						name: consume('identifier', 'superclass name expected'),
+					}
+				}
 				consume('{', '`{` expected before class body')
 				const methods: (Statement & { type: 'function' })[] = []
 				while (current < tokens.length && tokens[current].type !== '}') {
 					methods.push(funDeclaration('method'))
 				}
 				consume('}', '`}` expected after class body')
-				return { type: 'class', name, methods }
+				return { type: 'class', name, superclass, methods }
 			}
 			return statement()
 		} catch (e) {
@@ -512,6 +519,12 @@ function resolve(statements: Statement[]) {
 				currentClass = 'class'
 				declare(x.name)
 				define(x.name)
+				if (x.superclass) {
+					if (x.superclass.name.lexeme === x.name.lexeme) {
+						error(x.superclass.name.line, 'self-inheritance')
+					}
+					resolve(x.superclass)
+				}
 				beginScope()
 				scopes[scopes.length - 1]['this'] = true
 				for (const f of x.methods) {
@@ -861,7 +874,15 @@ export function execute(stmt: Statement) {
 			environment[stmt.name.lexeme] = new LoxFunction(stmt, environment, false)
 			break
 		case 'class':
-			const methods: Record<string, LoxFunction> = Object.create(null)
+			let superclass: LoxClass | undefined
+			if (stmt.superclass) {
+				const value = evaluate(stmt.superclass)
+				if (!(value instanceof LoxClass)) {
+					throw new RuntimeError(stmt.superclass.name, 'bad superclass')
+				}
+				superclass = value
+			}
+			const methods: Record<string, LoxFunction> = Object.create(superclass ? superclass.methods : null)
 			for (const method of stmt.methods) {
 				methods[method.name.lexeme] = new LoxFunction(method, environment, method.name.lexeme === 'init')
 			}
