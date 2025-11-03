@@ -109,6 +109,7 @@ type Expression =
 	| { type: 'variable', name: Token }
 	| { type: 'assign', name: Token, value: Expression }
 	| { type: 'this', keyword: Token }
+	| { type: 'super', keyword: Token, method: Token }
 	| { type: 'call', callee: Expression, paren: Token, arguments: Expression[] }
 	| { type: 'get', object: Expression, name: Token }
 	| { type: 'set', object: Expression, name: Token, value: Expression }
@@ -141,6 +142,8 @@ export function pprint(expr: Expression): string {
 			return parenthesize(expr.name.lexeme + '=', expr.value)
 		case 'this':
 			return 'this'
+		case 'super':
+			return 'super.' + expr.method.lexeme
 		case 'call':
 			return parenthesize('call', expr.callee, ...expr.arguments)
 		case 'get':
@@ -271,6 +274,14 @@ export function parse(tokens: Token[]): Statement[] {
 		if (match('identifier')) return {
 			type: 'variable',
 			name: tokens[current - 1],
+		}
+		if (match('super')) {
+			consume('.', '`.` expected after `super`')
+			return {
+				type: 'super',
+				keyword: tokens[current - 2],
+				method: consume('identifier', 'superclass method name expected'),
+			}
 		}
 		if (match('(')) {
 			const expr = expression()
@@ -453,7 +464,7 @@ export function parse(tokens: Token[]): Statement[] {
 function resolve(statements: Statement[]) {
 	const scopes: Record<string, boolean>[] = []
 	let currentFunction: undefined | 'function' | 'initializer' | 'method'
-	let currentClass: undefined | 'class'
+	let currentClass: undefined | 'class' | 'subclass'
 	const beginScope = () => void scopes.push(Object.create(null))
 	const endScope = () => void scopes.pop()
 	const declare = (name: Token) => {
@@ -520,10 +531,13 @@ function resolve(statements: Statement[]) {
 				declare(x.name)
 				define(x.name)
 				if (x.superclass) {
+					currentClass = 'subclass'
 					if (x.superclass.name.lexeme === x.name.lexeme) {
 						error(x.superclass.name.line, 'self-inheritance')
 					}
 					resolve(x.superclass)
+					beginScope()
+					scopes[scopes.length - 1]['super'] = true
 				}
 				beginScope()
 				scopes[scopes.length - 1]['this'] = true
@@ -531,12 +545,21 @@ function resolve(statements: Statement[]) {
 					resolveFunction(f, f.name.lexeme === 'init' ? 'initializer' : 'method')
 				}
 				endScope()
+				if (x.superclass) endScope()
 				currentClass = enclosingClass
 				break
 			case 'this':
 				if (!currentClass) {
 					error(x.keyword.line, 'stray `this`')
 					break
+				}
+				resolveLocal(x, x.keyword)
+				break
+			case 'super':
+				if (!currentClass) {
+					error(x.keyword.line, 'stray `super`')
+				} else if (currentClass !== 'subclass') {
+					error(x.keyword.line, '`super` with no superclass')
 				}
 				resolveLocal(x, x.keyword)
 				break
@@ -808,6 +831,19 @@ export function evaluate(expr: Expression): LoxObject {
 			return lookUpVariable(expr.name, expr)[expr.name.lexeme] = evaluate(expr.value)
 		case 'this':
 			return lookUpVariable(expr.keyword, expr)[expr.keyword.lexeme]
+		case 'super': {
+			let env = environment
+			for (let i = locals.get(expr)! - 1; i; i--) {
+				env = Object.getPrototypeOf(env)
+			}
+			const object = env['this']
+			if (!(object instanceof LoxInstance)) throw new TypeError('?')
+			const superclass = Object.getPrototypeOf(env)['super']
+			if (!(superclass instanceof LoxClass)) throw new TypeError('?')
+			const method = superclass.methods[expr.method.lexeme]
+			if (!method) throw new RuntimeError(expr.method, `undefined property`)
+			return method.bind(object)
+		}
 		case 'call':
 			const callee = evaluate(expr.callee)
 			if (!(typeof callee === 'object' && 'call' in callee)) {
@@ -881,12 +917,19 @@ export function execute(stmt: Statement) {
 					throw new RuntimeError(stmt.superclass.name, 'bad superclass')
 				}
 				superclass = value
+				environment = {
+					// @ts-ignore
+					__proto__: environment,
+					super: superclass,
+				}
 			}
 			const methods: Record<string, LoxFunction> = Object.create(superclass ? superclass.methods : null)
 			for (const method of stmt.methods) {
 				methods[method.name.lexeme] = new LoxFunction(method, environment, method.name.lexeme === 'init')
 			}
-			environment[stmt.name.lexeme] = new LoxClass(stmt.name.lexeme, methods)
+			const klass = new LoxClass(stmt.name.lexeme, methods)
+			if (stmt.superclass) environment = Object.getPrototypeOf(environment)
+			environment[stmt.name.lexeme] = klass
 			break
 		case 'if':
 			if (isTruthy(evaluate(stmt.condition))) {

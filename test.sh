@@ -313,7 +313,12 @@ class Doughnut {
   }
 }
 
-class BostonCream < Doughnut {}
+class BostonCream < Doughnut {
+  cook() {
+    super.cook();
+    print "Pipe full of custard and coat with chocolate.";
+  }
+}
 
 BostonCream().cook();
 INPUT
@@ -329,6 +334,7 @@ Foo instance init
 Foo instance init
 Foo instance
 Fry until golden brown.
+Pipe full of custard and coat with chocolate.
 OUTPUT
 
 diff <(node main.ts 2>&1 <(cat <<INPUT
@@ -338,4 +344,25 @@ class Subclass < NotAClass {} // ?!
 INPUT
 )) - <<OUTPUT
 Runtime error: bad superclass at \`NotAClass\` (line 3)
+OUTPUT
+
+diff <(node main.ts 2>&1 <(cat <<INPUT
+class Eclair {
+  cook() {
+    super.cook();
+    print "Pipe full of crème pâtissière.";
+  }
+}
+
+Eclair().cook();
+INPUT
+)) - <<OUTPUT
+Error: \`super\` with no superclass (line 3)
+OUTPUT
+
+diff <(node main.ts 2>&1 <(cat <<INPUT
+super.notEvenInAClass();
+INPUT
+)) - <<OUTPUT
+Error: stray \`super\` (line 1)
 OUTPUT
