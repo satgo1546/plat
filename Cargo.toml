@@ -1,0 +1,5 @@
+[package]
+name = "lox-rs"
+edition = "2024"
+
+[dependencies]
