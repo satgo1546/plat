@@ -1,5 +1,252 @@
 use std::fmt::{Debug, Write};
 
+mod scanner {
+    fn is_digit(c: char) -> bool {
+        c >= '0' && c <= '9'
+    }
+
+    fn is_alpha(c: char) -> bool {
+        c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' || c == '_'
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum TokenType {
+        // Single-character tokens.
+        LeftParen,
+        RightParen,
+        LeftBrace,
+        RightBrace,
+        Comma,
+        Dot,
+        Minus,
+        Plus,
+        Semicolon,
+        Slash,
+        Star,
+        // One or two character tokens.
+        Bang,
+        BangEqual,
+        Equal,
+        EqualEqual,
+        Greater,
+        GreaterEqual,
+        Less,
+        LessEqual,
+        // Literals.
+        Identifier,
+        String,
+        Number,
+        // Keywords.
+        And,
+        Class,
+        Else,
+        False,
+        For,
+        Fun,
+        If,
+        Nil,
+        Or,
+        Print,
+        Return,
+        Super,
+        This,
+        True,
+        Var,
+        While,
+
+        Error,
+        EOF,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct Token<'a> {
+        pub token_type: TokenType,
+        pub lexeme: &'a str,
+        pub line: i32,
+    }
+
+    pub struct Scanner<'a> {
+        source: &'a str,
+        start: usize,
+        current: usize,
+        line: i32,
+    }
+
+    impl Scanner<'_> {
+        pub fn new(source: &str) -> Scanner<'_> {
+            Scanner {
+                source,
+                start: 0,
+                current: 0,
+                line: 1,
+            }
+        }
+
+        fn make_token(&self, token_type: TokenType) -> Token<'_> {
+            Token {
+                token_type,
+                lexeme: &self.source[self.start..self.current],
+                line: self.line,
+            }
+        }
+
+        fn error_token<'a>(&self, message: &'a str) -> Token<'a> {
+            Token {
+                token_type: TokenType::Error,
+                lexeme: message,
+                line: self.line,
+            }
+        }
+
+        fn is_at_end(&self) -> bool {
+            self.current >= self.source.len()
+        }
+
+        fn char_at(&self, index: usize) -> char {
+            self.source.as_bytes()[index] as char
+        }
+
+        fn peek(&self) -> char {
+            if self.is_at_end() {
+                return '\0';
+            }
+            self.char_at(self.current)
+        }
+
+        fn peek_next(&self) -> char {
+            if self.current + 1 >= self.source.len() {
+                return '\0';
+            }
+            self.char_at(self.current + 1)
+        }
+
+        fn advance(&mut self) -> char {
+            let c = self.peek();
+            self.current += 1;
+            c
+        }
+
+        fn matches(&mut self, expected: char) -> bool {
+            if self.is_at_end() {
+                return false;
+            }
+            if self.peek() != expected {
+                return false;
+            }
+            self.advance();
+            true
+        }
+
+        fn skip_whitespace(&mut self) {
+            loop {
+                match self.peek() {
+                    ' ' | '\r' | '\t' => {
+                        self.advance();
+                    }
+                    '\n' => {
+                        self.line += 1;
+                        self.advance();
+                    }
+                    '/' => {
+                        if self.peek_next() == '/' {
+                            while self.peek() != '\n' && !self.is_at_end() {
+                                self.advance();
+                            }
+                        } else {
+                            return;
+                        }
+                    }
+                    _ => return,
+                };
+            }
+        }
+
+        pub fn next(&mut self) -> Token<'_> {
+            self.skip_whitespace();
+            self.start = self.current;
+            if self.is_at_end() {
+                return self.make_token(TokenType::EOF);
+            }
+            let c = self.advance();
+            match c {
+                '(' => self.make_token(TokenType::LeftParen),
+                ')' => self.make_token(TokenType::RightParen),
+                '{' => self.make_token(TokenType::LeftBrace),
+                '}' => self.make_token(TokenType::RightBrace),
+                ';' => self.make_token(TokenType::Semicolon),
+                ',' => self.make_token(TokenType::Comma),
+                '.' => self.make_token(TokenType::Dot),
+                '-' => self.make_token(TokenType::Minus),
+                '+' => self.make_token(TokenType::Plus),
+                '/' => self.make_token(TokenType::Slash),
+                '*' => self.make_token(TokenType::Star),
+                '!' => {
+                    if self.matches('=') {
+                        self.make_token(TokenType::BangEqual)
+                    } else {
+                        self.make_token(TokenType::Bang)
+                    }
+                }
+                '=' => {
+                    if self.matches('=') {
+                        self.make_token(TokenType::EqualEqual)
+                    } else {
+                        self.make_token(TokenType::Equal)
+                    }
+                }
+                '<' => {
+                    if self.matches('=') {
+                        self.make_token(TokenType::LessEqual)
+                    } else {
+                        self.make_token(TokenType::Less)
+                    }
+                }
+                '>' => {
+                    if self.matches('=') {
+                        self.make_token(TokenType::GreaterEqual)
+                    } else {
+                        self.make_token(TokenType::Greater)
+                    }
+                }
+                '"' => {
+                    while self.peek() != '"' && !self.is_at_end() {
+                        if self.peek() == '\n' {
+                            self.line += 1;
+                        }
+                        self.advance();
+                    }
+                    if self.is_at_end() {
+                        self.error_token("unterminated string")
+                    } else {
+                        assert!(self.advance() == '"');
+                        self.make_token(TokenType::String)
+                    }
+                }
+                c if is_alpha(c) => {
+                    while is_alpha(self.peek()) || is_digit(self.peek()) {
+                        self.advance();
+                    }
+                    self.make_token(TokenType::Identifier)
+                }
+                c if is_digit(c) => {
+                    while is_digit(self.peek()) {
+                        self.advance();
+                    }
+                    if self.peek() == '.' && is_digit(self.peek_next()) {
+                        assert!(self.advance() == '.');
+                        while is_digit(self.peek()) {
+                            self.advance();
+                        }
+                    }
+                    self.make_token(TokenType::Number)
+                }
+                _ => self.error_token("unexpected character"),
+            }
+        }
+    }
+}
+use crate::scanner::TokenType;
+
 #[derive(Debug, Clone)]
 pub enum Instruction {
     Constant(u8),
@@ -74,6 +321,25 @@ impl VM {
         VM {}
     }
 
+    pub fn interpret(&mut self, source: &str) -> InterpretResult {
+        let mut scanner = scanner::Scanner::new(source);
+        let mut line = -1;
+        loop {
+            let token = scanner.next();
+            if token.line == line {
+                print!("   | ");
+            } else {
+                line = token.line;
+                print!("{:4} ", line);
+            }
+            println!("{:?} '{}'", token.token_type, token.lexeme);
+            if let TokenType::EOF = token.token_type {
+                break;
+            }
+        }
+        return Ok(());
+    }
+
     fn binary_op(stack: &mut Vec<Value>, op: fn(f64, f64) -> f64) -> InterpretResult {
         let b = stack.pop().unwrap();
         let a = stack.pop().unwrap();
@@ -82,11 +348,12 @@ impl VM {
                 stack.push(Value::Number(op(a, b)));
                 Ok(())
             }
+            #[allow(unreachable_patterns)]
             _ => Err(InterpretError::RuntimeError),
         }
     }
 
-    pub fn interpret(&mut self, chunk: &Chunk) -> InterpretResult {
+    pub fn _interpret(&mut self, chunk: &Chunk) -> InterpretResult {
         let mut ip = 0;
         let mut stack = Vec::<Value>::new();
         loop {
