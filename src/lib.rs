@@ -161,6 +161,56 @@ mod scanner {
             }
         }
 
+        fn check_keyword(&self, start: usize, rest: &str, token_type: TokenType) -> TokenType {
+            if self.current - self.start == start + rest.len()
+                && rest == &self.source[self.start + start..self.current]
+            {
+                token_type
+            } else {
+                TokenType::Identifier
+            }
+        }
+
+        fn identifier_type(&self) -> TokenType {
+            match self.char_at(self.start) {
+                'a' => self.check_keyword(1, "nd", TokenType::And),
+                'c' => self.check_keyword(1, "lass", TokenType::Class),
+                'e' => self.check_keyword(1, "lse", TokenType::Else),
+                'f' => {
+                    if self.current - self.start > 1 {
+                        match self.char_at(self.start + 1) {
+                            'a' => self.check_keyword(2, "lse", TokenType::False),
+                            'o' => self.check_keyword(2, "r", TokenType::For),
+                            'u' => self.check_keyword(2, "n", TokenType::Fun),
+                            _ => TokenType::Identifier,
+                        }
+                    } else {
+                        TokenType::Identifier
+                    }
+                }
+                'i' => self.check_keyword(1, "f", TokenType::If),
+                'n' => self.check_keyword(1, "il", TokenType::Nil),
+                'o' => self.check_keyword(1, "r", TokenType::Or),
+                'p' => self.check_keyword(1, "rint", TokenType::Print),
+                'r' => self.check_keyword(1, "eturn", TokenType::Return),
+                's' => self.check_keyword(1, "uper", TokenType::Super),
+                't' => {
+                    if self.current - self.start > 1 {
+                        match self.char_at(self.start + 1) {
+                            'h' => self.check_keyword(2, "is", TokenType::This),
+                            'r' => self.check_keyword(2, "ue", TokenType::True),
+                            _ => TokenType::Identifier,
+                        }
+                    } else {
+                        TokenType::Identifier
+                    }
+                }
+                'v' => self.check_keyword(1, "ar", TokenType::Var),
+                'w' => self.check_keyword(1, "hile", TokenType::While),
+                _ => TokenType::Identifier,
+            }
+        }
+
         pub fn next(&mut self) -> Token<'_> {
             self.skip_whitespace();
             self.start = self.current;
@@ -226,7 +276,7 @@ mod scanner {
                     while is_alpha(self.peek()) || is_digit(self.peek()) {
                         self.advance();
                     }
-                    self.make_token(TokenType::Identifier)
+                    self.make_token(self.identifier_type())
                 }
                 c if is_digit(c) => {
                     while is_digit(self.peek()) {
@@ -245,7 +295,6 @@ mod scanner {
         }
     }
 }
-use crate::scanner::TokenType;
 
 #[derive(Debug, Clone)]
 pub enum Instruction {
@@ -322,6 +371,11 @@ impl VM {
     }
 
     pub fn interpret(&mut self, source: &str) -> InterpretResult {
+        self.compile(source);
+        Ok(())
+    }
+
+    fn compile(&self, source: &str) {
         let mut scanner = scanner::Scanner::new(source);
         let mut line = -1;
         loop {
@@ -333,11 +387,10 @@ impl VM {
                 print!("{:4} ", line);
             }
             println!("{:?} '{}'", token.token_type, token.lexeme);
-            if let TokenType::EOF = token.token_type {
+            if let crate::scanner::TokenType::EOF = token.token_type {
                 break;
             }
         }
-        return Ok(());
     }
 
     fn binary_op(stack: &mut Vec<Value>, op: fn(f64, f64) -> f64) -> InterpretResult {
@@ -353,7 +406,7 @@ impl VM {
         }
     }
 
-    pub fn _interpret(&mut self, chunk: &Chunk) -> InterpretResult {
+    pub fn run(&mut self, chunk: &Chunk) -> InterpretResult {
         let mut ip = 0;
         let mut stack = Vec::<Value>::new();
         loop {
