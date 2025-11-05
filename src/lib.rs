@@ -3,6 +3,11 @@ use std::fmt::{Debug, Write};
 #[derive(Debug, Clone)]
 pub enum Instruction {
     Constant(u8),
+    Add,
+    Subtract,
+    Multiply,
+    Divide,
+    Negate,
     Return,
 }
 
@@ -52,5 +57,70 @@ impl Debug for Chunk {
             write!(f, "{:?}", instruction)?;
         }
         Ok(())
+    }
+}
+
+pub struct VM {}
+
+#[derive(Debug)]
+pub enum InterpretError {
+    CompileError,
+    RuntimeError,
+}
+pub type InterpretResult = Result<(), InterpretError>;
+
+impl VM {
+    pub fn new() -> VM {
+        VM {}
+    }
+
+    fn binary_op(stack: &mut Vec<Value>, op: fn(f64, f64) -> f64) -> InterpretResult {
+        let b = stack.pop().unwrap();
+        let a = stack.pop().unwrap();
+        match (a, b) {
+            (Value::Number(a), Value::Number(b)) => {
+                stack.push(Value::Number(op(a, b)));
+                Ok(())
+            }
+            _ => Err(InterpretError::RuntimeError),
+        }
+    }
+
+    pub fn interpret(&mut self, chunk: &Chunk) -> InterpretResult {
+        let mut ip = 0;
+        let mut stack = Vec::<Value>::new();
+        loop {
+            match chunk.code[ip] {
+                Instruction::Constant(constant) => {
+                    let constant = chunk.constants[constant as usize].clone();
+                    println!("{:?}", constant);
+                    stack.push(constant);
+                }
+                Instruction::Add => {
+                    Self::binary_op(&mut stack, std::ops::Add::add)?;
+                }
+                Instruction::Subtract => {
+                    Self::binary_op(&mut stack, std::ops::Sub::sub)?;
+                }
+                Instruction::Multiply => {
+                    Self::binary_op(&mut stack, std::ops::Mul::mul)?;
+                }
+                Instruction::Divide => {
+                    Self::binary_op(&mut stack, std::ops::Div::div)?;
+                }
+                Instruction::Negate => {
+                    let value = stack.last_mut().unwrap();
+                    match value {
+                        Value::Number(x) => *x = -*x,
+                    }
+                }
+                Instruction::Return => {
+                    let value = stack.pop().unwrap();
+                    println!("ret {:?}", value);
+                    return Ok(());
+                }
+            }
+            ip += 1;
+        }
     }
 }
