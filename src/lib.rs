@@ -332,9 +332,13 @@ impl Chunk {
         self.lines.push(line);
     }
 
-    pub fn add_constant(&mut self, value: Value) -> u8 {
-        self.constants.push(value);
-        (self.constants.len() - 1) as u8
+    pub fn add_constant(&mut self, value: Value) -> Option<u8> {
+        if self.constants.len() <= u8::MAX as usize {
+            self.constants.push(value);
+            Some((self.constants.len() - 1) as u8)
+        } else {
+            None
+        }
     }
 }
 
@@ -356,6 +360,190 @@ impl Debug for Chunk {
     }
 }
 
+mod compiler {
+    use crate::{
+        Chunk, Instruction, Value,
+        scanner::{Scanner, Token, TokenType},
+    };
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
+    struct Precedence(u8);
+
+    impl Precedence {
+        pub const NONE: Self = Self(0);
+        pub const ASSIGNMENT: Self = Self(1); // =
+        #[allow(unused)]
+        pub const OR: Self = Self(2); // or
+        #[allow(unused)]
+        pub const AND: Self = Self(3); // and
+        #[allow(unused)]
+        pub const EQUALITY: Self = Self(4); // == !=
+        #[allow(unused)]
+        pub const COMPARISON: Self = Self(5); // < <= > >=
+        pub const TERM: Self = Self(6); // + -
+        pub const FACTOR: Self = Self(7); // * /
+        pub const UNARY: Self = Self(8); // ! -
+        #[allow(unused)]
+        pub const CALL: Self = Self(9); // . ()
+        #[allow(unused)]
+        pub const PRIMARY: Self = Self(10);
+    }
+
+    pub struct Compiler<'a> {
+        scanner: Scanner<'a>,
+        current: Token<'a>,
+        previous: Token<'a>,
+        had_error: bool,
+        panic_mode: bool,
+    }
+
+    impl<'a> Compiler<'a> {
+        pub fn new<'b>(source: &'b str) -> Compiler<'b> {
+            Compiler {
+                scanner: Scanner::new(source),
+                current: Token {
+                    token_type: TokenType::EOF,
+                    lexeme: "",
+                    line: 0,
+                },
+                previous: Token {
+                    token_type: TokenType::EOF,
+                    lexeme: "",
+                    line: 0,
+                },
+                had_error: false,
+                panic_mode: false,
+            }
+        }
+
+        fn error_at(&mut self, token: Token, message: &str) {
+            if self.panic_mode {
+                return;
+            }
+            self.panic_mode = true;
+            eprint!("Error: {}", message);
+            match token.token_type {
+                TokenType::EOF => eprint!(" at end"),
+                TokenType::Error => {}
+                _ => eprint!(" at `{}`", token.lexeme),
+            }
+            eprintln!(" (line {})", token.line);
+            self.had_error = true;
+        }
+
+        fn error_at_current(&mut self, message: &str) {
+            self.error_at(self.current, message);
+        }
+
+        fn error(&mut self, message: &str) {
+            self.error_at(self.previous, message);
+        }
+
+        fn advance(&mut self) {
+            self.previous = self.current;
+            loop {
+                self.current = self.scanner.next();
+                if let TokenType::Error = self.current.token_type {
+                    self.error_at_current(self.current.lexeme);
+                } else {
+                    break;
+                }
+            }
+        }
+
+        fn consume(&mut self, token_type: TokenType, message: &str) {
+            if self.current.token_type == token_type {
+                self.advance();
+                return;
+            }
+            self.error_at_current(message);
+        }
+
+        fn get_precedence(token_type: TokenType) -> Precedence {
+            match token_type {
+                TokenType::Plus | TokenType::Minus => Precedence::TERM,
+                TokenType::Star | TokenType::Slash => Precedence::FACTOR,
+                _ => Precedence::NONE,
+            }
+        }
+
+        fn parse_precedence(&mut self, chunk: &mut Chunk, base_precedence: Precedence) {
+            self.advance();
+            match self.previous.token_type {
+                TokenType::LeftParen => {
+                    self.expression(chunk);
+                    self.consume(TokenType::RightParen, "`)` expected after expression");
+                }
+                TokenType::Minus => {
+                    self.parse_precedence(chunk, Precedence::UNARY);
+                    self.emit_instruction(chunk, Instruction::Negate);
+                }
+                TokenType::Number => {
+                    let value = self.previous.lexeme.parse();
+                    let value = value.expect("tokenizer slip through?");
+                    self.emit_constant(chunk, Value::Number(value));
+                }
+                _ => {
+                    self.error("expression expected");
+                }
+            }
+            loop {
+                let precedence = Self::get_precedence(self.current.token_type);
+                if base_precedence > precedence {
+                    break;
+                }
+                self.advance();
+                match self.previous.token_type {
+                    token_type @ (TokenType::Plus
+                    | TokenType::Minus
+                    | TokenType::Star
+                    | TokenType::Slash) => {
+                        self.parse_precedence(chunk, Precedence(precedence.0 + 1));
+                        match token_type {
+                            TokenType::Plus => self.emit_instruction(chunk, Instruction::Add),
+                            TokenType::Minus => self.emit_instruction(chunk, Instruction::Subtract),
+                            TokenType::Star => self.emit_instruction(chunk, Instruction::Multiply),
+                            TokenType::Slash => self.emit_instruction(chunk, Instruction::Divide),
+                            _ => unreachable!("match statements mismatch"),
+                        }
+                    }
+                    _ => unreachable!("unhandled TokenType having precedence other than None"),
+                }
+            }
+        }
+
+        fn expression(&mut self, chunk: &mut Chunk) {
+            self.parse_precedence(chunk, Precedence::ASSIGNMENT);
+        }
+
+        pub fn compile(&mut self, chunk: &mut Chunk) -> Result<(), ()> {
+            self.advance();
+            self.expression(chunk);
+            self.consume(TokenType::EOF, "end of expression expected");
+            if self.had_error {
+                return Err(());
+            }
+            self.emit_instruction(chunk, Instruction::Return);
+            if !self.had_error {
+                println!("{:?}", chunk);
+            }
+            Ok(())
+        }
+
+        fn emit_instruction(&self, chunk: &mut Chunk, instruction: Instruction) {
+            chunk.write(instruction, self.previous.line);
+        }
+
+        fn emit_constant(&mut self, chunk: &mut Chunk, value: Value) {
+            if let Some(constant) = chunk.add_constant(value) {
+                self.emit_instruction(chunk, Instruction::Constant(constant));
+            } else {
+                self.error("too many constants in one chunk");
+            }
+        }
+    }
+}
+
 pub struct VM {}
 
 #[derive(Debug)]
@@ -371,26 +559,12 @@ impl VM {
     }
 
     pub fn interpret(&mut self, source: &str) -> InterpretResult {
-        self.compile(source);
-        Ok(())
-    }
-
-    fn compile(&self, source: &str) {
-        let mut scanner = scanner::Scanner::new(source);
-        let mut line = -1;
-        loop {
-            let token = scanner.next();
-            if token.line == line {
-                print!("   | ");
-            } else {
-                line = token.line;
-                print!("{:4} ", line);
-            }
-            println!("{:?} '{}'", token.token_type, token.lexeme);
-            if let crate::scanner::TokenType::EOF = token.token_type {
-                break;
-            }
+        let mut chunk = Chunk::new();
+        let mut compiler = compiler::Compiler::new(source);
+        if let Err(_) = compiler.compile(&mut chunk) {
+            return Err(InterpretError::CompileError);
         }
+        self.run(&chunk)
     }
 
     fn binary_op(stack: &mut Vec<Value>, op: fn(f64, f64) -> f64) -> InterpretResult {
