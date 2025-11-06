@@ -72,7 +72,7 @@ mod scanner {
         line: i32,
     }
 
-    impl Scanner<'_> {
+    impl<'a> Scanner<'a> {
         pub fn new(source: &str) -> Scanner<'_> {
             Scanner {
                 source,
@@ -82,7 +82,7 @@ mod scanner {
             }
         }
 
-        fn make_token(&self, token_type: TokenType) -> Token<'_> {
+        fn make_token(&self, token_type: TokenType) -> Token<'a> {
             Token {
                 token_type,
                 lexeme: &self.source[self.start..self.current],
@@ -90,7 +90,7 @@ mod scanner {
             }
         }
 
-        fn error_token<'a>(&self, message: &'a str) -> Token<'a> {
+        fn error_token<'b>(&self, message: &'b str) -> Token<'b> {
             Token {
                 token_type: TokenType::Error,
                 lexeme: message,
@@ -211,7 +211,7 @@ mod scanner {
             }
         }
 
-        pub fn next(&mut self) -> Token<'_> {
+        pub fn next(&mut self) -> Token<'a> {
             self.skip_whitespace();
             self.start = self.current;
             if self.is_at_end() {
