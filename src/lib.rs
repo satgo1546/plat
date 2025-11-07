@@ -1,4 +1,4 @@
-use std::fmt::{Debug, Write};
+use std::fmt::{Debug, Display, Write};
 
 mod scanner {
     fn is_digit(c: char) -> bool {
@@ -319,6 +319,7 @@ pub enum Value {
     Nil,
     Boolean(bool),
     Number(f64),
+    String(String),
 }
 
 impl Value {
@@ -327,6 +328,17 @@ impl Value {
             Self::Nil => false,
             Self::Boolean(x) => *x,
             _ => true,
+        }
+    }
+}
+
+impl Display for Value {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Nil => f.write_str("nil"),
+            Self::Boolean(x) => write!(f, "{}", x),
+            Self::Number(x) => write!(f, "{}", x),
+            Self::String(x) => f.write_str(x),
         }
     }
 }
@@ -518,6 +530,10 @@ mod compiler {
                     let value = value.expect("tokenizer slip through?");
                     self.emit_constant(chunk, Value::Number(value));
                 }
+                TokenType::String => {
+                    let value = &self.previous.lexeme[1..self.previous.lexeme.len() - 1];
+                    self.emit_constant(chunk, Value::String(value.to_string()));
+                }
                 _ => {
                     self.error("expression expected");
                 }
@@ -671,7 +687,20 @@ impl VM {
                     self.stack.push(Value::Boolean(false));
                 }
                 Instruction::Add => {
-                    self.binary_op(chunk, |a, b| Value::Number(a + b))?;
+                    let b = self.stack.pop().unwrap();
+                    let a = self.stack.pop().unwrap();
+                    self.stack.push(match (a, b) {
+                        (a @ Value::String(_), b) | (a, b @ Value::String(_)) => {
+                            Value::String(format!("{}{}", a, b))
+                        }
+                        (Value::Number(a), Value::Number(b)) => Value::Number(a + b),
+                        _ => {
+                            return self.runtime_error(
+                                chunk,
+                                "operands must consist of two numbers or at least one string",
+                            );
+                        }
+                    })
                 }
                 Instruction::Subtract => {
                     self.binary_op(chunk, |a, b| Value::Number(a - b))?;
