@@ -299,17 +299,36 @@ mod scanner {
 #[derive(Debug, Clone)]
 pub enum Instruction {
     Constant(u8),
+    Nil,
+    True,
+    False,
     Add,
     Subtract,
     Multiply,
     Divide,
+    Equal,
+    Less,
+    Greater,
+    Not,
     Negate,
     Return,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Value {
+    Nil,
+    Boolean(bool),
     Number(f64),
+}
+
+impl Value {
+    fn is_truthy(&self) -> bool {
+        match self {
+            Self::Nil => false,
+            Self::Boolean(x) => *x,
+            _ => true,
+        }
+    }
 }
 
 pub struct Chunk {
@@ -376,9 +395,7 @@ mod compiler {
         pub const OR: Self = Self(2); // or
         #[allow(unused)]
         pub const AND: Self = Self(3); // and
-        #[allow(unused)]
         pub const EQUALITY: Self = Self(4); // == !=
-        #[allow(unused)]
         pub const COMPARISON: Self = Self(5); // < <= > >=
         pub const TERM: Self = Self(6); // + -
         pub const FACTOR: Self = Self(7); // * /
@@ -463,6 +480,11 @@ mod compiler {
             match token_type {
                 TokenType::Plus | TokenType::Minus => Precedence::TERM,
                 TokenType::Star | TokenType::Slash => Precedence::FACTOR,
+                TokenType::EqualEqual | TokenType::BangEqual => Precedence::EQUALITY,
+                TokenType::Less
+                | TokenType::LessEqual
+                | TokenType::Greater
+                | TokenType::GreaterEqual => Precedence::COMPARISON,
                 _ => Precedence::NONE,
             }
         }
@@ -474,9 +496,22 @@ mod compiler {
                     self.expression(chunk);
                     self.consume(TokenType::RightParen, "`)` expected after expression");
                 }
+                TokenType::Bang => {
+                    self.parse_precedence(chunk, Precedence::UNARY);
+                    self.emit_instruction(chunk, Instruction::Not);
+                }
                 TokenType::Minus => {
                     self.parse_precedence(chunk, Precedence::UNARY);
                     self.emit_instruction(chunk, Instruction::Negate);
+                }
+                TokenType::Nil => {
+                    self.emit_instruction(chunk, Instruction::Nil);
+                }
+                TokenType::True => {
+                    self.emit_instruction(chunk, Instruction::True);
+                }
+                TokenType::False => {
+                    self.emit_instruction(chunk, Instruction::False);
                 }
                 TokenType::Number => {
                     let value = self.previous.lexeme.parse();
@@ -497,13 +532,38 @@ mod compiler {
                     token_type @ (TokenType::Plus
                     | TokenType::Minus
                     | TokenType::Star
-                    | TokenType::Slash) => {
+                    | TokenType::Slash
+                    | TokenType::EqualEqual
+                    | TokenType::BangEqual
+                    | TokenType::Less
+                    | TokenType::LessEqual
+                    | TokenType::Greater
+                    | TokenType::GreaterEqual) => {
                         self.parse_precedence(chunk, Precedence(precedence.0 + 1));
                         match token_type {
                             TokenType::Plus => self.emit_instruction(chunk, Instruction::Add),
                             TokenType::Minus => self.emit_instruction(chunk, Instruction::Subtract),
                             TokenType::Star => self.emit_instruction(chunk, Instruction::Multiply),
                             TokenType::Slash => self.emit_instruction(chunk, Instruction::Divide),
+                            TokenType::EqualEqual => {
+                                self.emit_instruction(chunk, Instruction::Equal)
+                            }
+                            TokenType::BangEqual => {
+                                self.emit_instruction(chunk, Instruction::Equal);
+                                self.emit_instruction(chunk, Instruction::Not);
+                            }
+                            TokenType::Less => self.emit_instruction(chunk, Instruction::Less),
+                            TokenType::LessEqual => {
+                                self.emit_instruction(chunk, Instruction::Greater);
+                                self.emit_instruction(chunk, Instruction::Not);
+                            }
+                            TokenType::Greater => {
+                                self.emit_instruction(chunk, Instruction::Greater)
+                            }
+                            TokenType::GreaterEqual => {
+                                self.emit_instruction(chunk, Instruction::Less);
+                                self.emit_instruction(chunk, Instruction::Not);
+                            }
                             _ => unreachable!("match statements mismatch"),
                         }
                     }
@@ -544,7 +604,10 @@ mod compiler {
     }
 }
 
-pub struct VM {}
+pub struct VM {
+    ip: usize,
+    stack: Vec<Value>,
+}
 
 #[derive(Debug)]
 pub enum InterpretError {
@@ -555,7 +618,10 @@ pub type InterpretResult = Result<(), InterpretError>;
 
 impl VM {
     pub fn new() -> VM {
-        VM {}
+        VM {
+            ip: 0,
+            stack: Vec::new(),
+        }
     }
 
     pub fn interpret(&mut self, source: &str) -> InterpretResult {
@@ -567,54 +633,84 @@ impl VM {
         self.run(&chunk)
     }
 
-    fn binary_op(stack: &mut Vec<Value>, op: fn(f64, f64) -> f64) -> InterpretResult {
-        let b = stack.pop().unwrap();
-        let a = stack.pop().unwrap();
+    fn runtime_error(&mut self, chunk: &Chunk, message: &str) -> InterpretResult {
+        eprintln!("Runtime error: {} (line {})", message, chunk.lines[self.ip]);
+        self.stack.clear();
+        Err(InterpretError::RuntimeError)
+    }
+
+    fn binary_op(&mut self, chunk: &Chunk, op: fn(f64, f64) -> Value) -> InterpretResult {
+        let b = self.stack.pop().unwrap();
+        let a = self.stack.pop().unwrap();
         match (a, b) {
             (Value::Number(a), Value::Number(b)) => {
-                stack.push(Value::Number(op(a, b)));
+                self.stack.push(op(a, b));
                 Ok(())
             }
-            #[allow(unreachable_patterns)]
-            _ => Err(InterpretError::RuntimeError),
+            _ => self.runtime_error(chunk, "operands must be numbers"),
         }
     }
 
-    pub fn run(&mut self, chunk: &Chunk) -> InterpretResult {
-        let mut ip = 0;
-        let mut stack = Vec::<Value>::new();
+    fn run(&mut self, chunk: &Chunk) -> InterpretResult {
+        self.ip = 0;
+        self.stack.clear();
         loop {
-            match chunk.code[ip] {
+            match chunk.code[self.ip] {
                 Instruction::Constant(constant) => {
                     let constant = chunk.constants[constant as usize].clone();
                     println!("{:?}", constant);
-                    stack.push(constant);
+                    self.stack.push(constant);
+                }
+                Instruction::Nil => {
+                    self.stack.push(Value::Nil);
+                }
+                Instruction::True => {
+                    self.stack.push(Value::Boolean(true));
+                }
+                Instruction::False => {
+                    self.stack.push(Value::Boolean(false));
                 }
                 Instruction::Add => {
-                    Self::binary_op(&mut stack, std::ops::Add::add)?;
+                    self.binary_op(chunk, |a, b| Value::Number(a + b))?;
                 }
                 Instruction::Subtract => {
-                    Self::binary_op(&mut stack, std::ops::Sub::sub)?;
+                    self.binary_op(chunk, |a, b| Value::Number(a - b))?;
                 }
                 Instruction::Multiply => {
-                    Self::binary_op(&mut stack, std::ops::Mul::mul)?;
+                    self.binary_op(chunk, |a, b| Value::Number(a * b))?;
                 }
                 Instruction::Divide => {
-                    Self::binary_op(&mut stack, std::ops::Div::div)?;
+                    self.binary_op(chunk, |a, b| Value::Number(a / b))?;
+                }
+                Instruction::Equal => {
+                    let b = self.stack.pop().unwrap();
+                    let a = self.stack.pop().unwrap();
+                    self.stack.push(Value::Boolean(a == b));
+                }
+                Instruction::Less => {
+                    self.binary_op(chunk, |a, b| Value::Boolean(a < b))?;
+                }
+                Instruction::Greater => {
+                    self.binary_op(chunk, |a, b| Value::Boolean(a > b))?;
+                }
+                Instruction::Not => {
+                    let value = self.stack.last_mut().unwrap();
+                    *value = Value::Boolean(!value.is_truthy());
                 }
                 Instruction::Negate => {
-                    let value = stack.last_mut().unwrap();
+                    let value = self.stack.last_mut().unwrap();
                     match value {
                         Value::Number(x) => *x = -*x,
+                        _ => return self.runtime_error(chunk, "operand must be number"),
                     }
                 }
                 Instruction::Return => {
-                    let value = stack.pop().unwrap();
+                    let value = self.stack.pop().unwrap();
                     println!("ret {:?}", value);
                     return Ok(());
                 }
             }
-            ip += 1;
+            self.ip += 1;
         }
     }
 }
