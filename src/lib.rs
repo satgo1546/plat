@@ -319,6 +319,7 @@ pub enum Instruction {
     Return,
     DefineGlobal(u8),
     GetGlobal(u8),
+    SetGlobal(u8),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -514,9 +515,14 @@ mod compiler {
             self.emit_instruction(chunk, Instruction::DefineGlobal(global));
         }
 
-        fn named_variable(&mut self, chunk: &mut Chunk, name: Token) {
+        fn named_variable(&mut self, chunk: &mut Chunk, name: Token, can_assign: bool) {
             let arg = self.make_constant(chunk, Value::String(name.lexeme.to_string()));
-            self.emit_instruction(chunk, Instruction::GetGlobal(arg));
+            if can_assign && self.matches(TokenType::Equal) {
+                self.expression(chunk);
+                self.emit_instruction(chunk, Instruction::SetGlobal(arg));
+            } else {
+                self.emit_instruction(chunk, Instruction::GetGlobal(arg));
+            }
         }
 
         fn synchronize(&mut self) {
@@ -554,6 +560,7 @@ mod compiler {
         }
 
         fn parse_precedence(&mut self, chunk: &mut Chunk, base_precedence: Precedence) {
+            let can_assign = base_precedence <= Precedence::ASSIGNMENT;
             self.advance();
             match self.previous.token_type {
                 TokenType::LeftParen => {
@@ -587,7 +594,7 @@ mod compiler {
                     self.emit_constant(chunk, Value::String(value.to_string()));
                 }
                 TokenType::Identifier => {
-                    self.named_variable(chunk, self.previous);
+                    self.named_variable(chunk, self.previous, can_assign);
                 }
                 _ => {
                     self.error("expression expected");
@@ -640,6 +647,9 @@ mod compiler {
                     }
                     _ => unreachable!("unhandled TokenType having precedence other than None"),
                 }
+            }
+            if can_assign && self.matches(TokenType::Equal) {
+                self.error("invalid assignment target");
             }
         }
 
@@ -855,6 +865,18 @@ impl VM {
                         return self.runtime_error(chunk, "undefined variable");
                     };
                     self.stack.push(value.clone());
+                }
+                Instruction::SetGlobal(name) => {
+                    let Value::String(name) = &chunk.constants[name as usize] else {
+                        panic!("bad operand of SetGlobal")
+                    };
+                    if let None = self
+                        .globals
+                        .insert(name.clone(), self.stack.last().unwrap().clone())
+                    {
+                        self.globals.remove(name);
+                        return self.runtime_error(chunk, "undefined variable");
+                    }
                 }
             }
             self.ip += 1;
