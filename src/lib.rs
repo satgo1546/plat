@@ -318,6 +318,7 @@ pub enum Instruction {
     Print,
     Return,
     DefineGlobal(u8),
+    GetGlobal(u8),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -513,6 +514,11 @@ mod compiler {
             self.emit_instruction(chunk, Instruction::DefineGlobal(global));
         }
 
+        fn named_variable(&mut self, chunk: &mut Chunk, name: Token) {
+            let arg = self.make_constant(chunk, Value::String(name.lexeme.to_string()));
+            self.emit_instruction(chunk, Instruction::GetGlobal(arg));
+        }
+
         fn synchronize(&mut self) {
             self.panic_mode = false;
             while self.current.token_type != TokenType::EOF {
@@ -579,6 +585,9 @@ mod compiler {
                 TokenType::String => {
                     let value = &self.previous.lexeme[1..self.previous.lexeme.len() - 1];
                     self.emit_constant(chunk, Value::String(value.to_string()));
+                }
+                TokenType::Identifier => {
+                    self.named_variable(chunk, self.previous);
                 }
                 _ => {
                     self.error("expression expected");
@@ -837,6 +846,15 @@ impl VM {
                         panic!("bad operand of DefineGlobal")
                     };
                     self.globals.insert(name.clone(), self.stack.pop().unwrap());
+                }
+                Instruction::GetGlobal(name) => {
+                    let Value::String(name) = &chunk.constants[name as usize] else {
+                        panic!("bad operand of GetGlobal")
+                    };
+                    let Some(value) = self.globals.get(name) else {
+                        return self.runtime_error(chunk, "undefined variable");
+                    };
+                    self.stack.push(value.clone());
                 }
             }
             self.ip += 1;
