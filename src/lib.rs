@@ -1,4 +1,7 @@
-use std::fmt::{Debug, Display, Write};
+use std::{
+    collections::HashMap,
+    fmt::{Debug, Display, Write},
+};
 
 mod scanner {
     fn is_digit(c: char) -> bool {
@@ -314,6 +317,7 @@ pub enum Instruction {
     Pop,
     Print,
     Return,
+    DefineGlobal(u8),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -500,6 +504,15 @@ mod compiler {
             }
         }
 
+        fn parse_variable(&mut self, chunk: &mut Chunk, error_message: &str) -> u8 {
+            self.consume(TokenType::Identifier, error_message);
+            self.make_constant(chunk, Value::String(self.previous.lexeme.to_string()))
+        }
+
+        fn define_variable(&mut self, chunk: &mut Chunk, global: u8) {
+            self.emit_instruction(chunk, Instruction::DefineGlobal(global));
+        }
+
         fn synchronize(&mut self) {
             self.panic_mode = false;
             while self.current.token_type != TokenType::EOF {
@@ -638,7 +651,21 @@ mod compiler {
         }
 
         fn declaration(&mut self, chunk: &mut Chunk) {
-            self.statement(chunk);
+            if self.matches(TokenType::Var) {
+                let global = self.parse_variable(chunk, "variable name expected");
+                if self.matches(TokenType::Equal) {
+                    self.expression(chunk);
+                } else {
+                    self.emit_instruction(chunk, Instruction::Nil);
+                }
+                self.consume(
+                    TokenType::Semicolon,
+                    "`;` expected after variable declaration",
+                );
+                self.define_variable(chunk, global);
+            } else {
+                self.statement(chunk);
+            }
             if self.panic_mode {
                 self.synchronize();
             }
@@ -664,12 +691,18 @@ mod compiler {
             chunk.write(instruction, self.previous.line);
         }
 
-        fn emit_constant(&mut self, chunk: &mut Chunk, value: Value) {
+        fn make_constant(&mut self, chunk: &mut Chunk, value: Value) -> u8 {
             if let Some(constant) = chunk.add_constant(value) {
-                self.emit_instruction(chunk, Instruction::Constant(constant));
+                constant
             } else {
                 self.error("too many constants in one chunk");
+                0
             }
+        }
+
+        fn emit_constant(&mut self, chunk: &mut Chunk, value: Value) {
+            let constant = self.make_constant(chunk, value);
+            self.emit_instruction(chunk, Instruction::Constant(constant));
         }
     }
 }
@@ -677,6 +710,7 @@ mod compiler {
 pub struct VM {
     ip: usize,
     stack: Vec<Value>,
+    globals: HashMap<String, Value>,
 }
 
 #[derive(Debug)]
@@ -691,6 +725,7 @@ impl VM {
         VM {
             ip: 0,
             stack: Vec::new(),
+            globals: HashMap::new(),
         }
     }
 
@@ -796,6 +831,12 @@ impl VM {
                 }
                 Instruction::Return => {
                     return Ok(());
+                }
+                Instruction::DefineGlobal(name) => {
+                    let Value::String(name) = &chunk.constants[name as usize] else {
+                        panic!("bad operand of DefineGlobal")
+                    };
+                    self.globals.insert(name.clone(), self.stack.pop().unwrap());
                 }
             }
             self.ip += 1;
