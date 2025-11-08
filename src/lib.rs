@@ -311,6 +311,8 @@ pub enum Instruction {
     Greater,
     Not,
     Negate,
+    Pop,
+    Print,
     Return,
 }
 
@@ -480,12 +482,43 @@ mod compiler {
             }
         }
 
-        fn consume(&mut self, token_type: TokenType, message: &str) {
-            if self.current.token_type == token_type {
+        fn check(&self, token_type: TokenType) -> bool {
+            self.current.token_type == token_type
+        }
+
+        fn matches(&mut self, token_type: TokenType) -> bool {
+            if self.check(token_type) {
                 self.advance();
-                return;
+                return true;
             }
-            self.error_at_current(message);
+            false
+        }
+
+        fn consume(&mut self, token_type: TokenType, message: &str) {
+            if !self.matches(token_type) {
+                self.error_at_current(message);
+            }
+        }
+
+        fn synchronize(&mut self) {
+            self.panic_mode = false;
+            while self.current.token_type != TokenType::EOF {
+                if let TokenType::Semicolon = self.previous.token_type {
+                    return;
+                }
+                match self.current.token_type {
+                    TokenType::Var
+                    | TokenType::Fun
+                    | TokenType::Class
+                    | TokenType::If
+                    | TokenType::For
+                    | TokenType::While
+                    | TokenType::Print
+                    | TokenType::Return => return,
+                    _ => {}
+                }
+                self.advance();
+            }
         }
 
         fn get_precedence(token_type: TokenType) -> Precedence {
@@ -592,9 +625,30 @@ mod compiler {
             self.parse_precedence(chunk, Precedence::ASSIGNMENT);
         }
 
+        fn statement(&mut self, chunk: &mut Chunk) {
+            if self.matches(TokenType::Print) {
+                self.expression(chunk);
+                self.consume(TokenType::Semicolon, "`;` expected after value");
+                self.emit_instruction(chunk, Instruction::Print);
+            } else {
+                self.expression(chunk);
+                self.consume(TokenType::Semicolon, "`;` expected after expression");
+                self.emit_instruction(chunk, Instruction::Pop);
+            }
+        }
+
+        fn declaration(&mut self, chunk: &mut Chunk) {
+            self.statement(chunk);
+            if self.panic_mode {
+                self.synchronize();
+            }
+        }
+
         pub fn compile(&mut self, chunk: &mut Chunk) -> Result<(), ()> {
             self.advance();
-            self.expression(chunk);
+            while !self.matches(TokenType::EOF) {
+                self.declaration(chunk);
+            }
             self.consume(TokenType::EOF, "end of expression expected");
             if self.had_error {
                 return Err(());
@@ -733,9 +787,14 @@ impl VM {
                         _ => return self.runtime_error(chunk, "operand must be number"),
                     }
                 }
-                Instruction::Return => {
+                Instruction::Pop => {
+                    self.stack.pop().unwrap();
+                }
+                Instruction::Print => {
                     let value = self.stack.pop().unwrap();
-                    println!("ret {:?}", value);
+                    println!("{}", value);
+                }
+                Instruction::Return => {
                     return Ok(());
                 }
             }
