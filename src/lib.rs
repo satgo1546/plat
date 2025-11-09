@@ -320,6 +320,8 @@ pub enum Instruction {
     DefineGlobal(u8),
     GetGlobal(u8),
     SetGlobal(u8),
+    GetLocal(u8),
+    SetLocal(u8),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -426,12 +428,19 @@ mod compiler {
         pub const PRIMARY: Self = Self(10);
     }
 
+    struct Local<'a> {
+        name: Token<'a>,
+        depth: i32,
+    }
+
     pub struct Compiler<'a> {
         scanner: Scanner<'a>,
         current: Token<'a>,
         previous: Token<'a>,
         had_error: bool,
         panic_mode: bool,
+        locals: Vec<Local<'a>>,
+        scope_depth: i32,
     }
 
     impl<'a> Compiler<'a> {
@@ -450,6 +459,8 @@ mod compiler {
                 },
                 had_error: false,
                 panic_mode: false,
+                locals: Vec::new(),
+                scope_depth: 0,
             }
         }
 
@@ -508,20 +519,85 @@ mod compiler {
 
         fn parse_variable(&mut self, chunk: &mut Chunk, error_message: &str) -> u8 {
             self.consume(TokenType::Identifier, error_message);
-            self.make_constant(chunk, Value::String(self.previous.lexeme.to_string()))
+            self.declare_variable();
+            if self.scope_depth > 0 {
+                0
+            } else {
+                self.make_constant(chunk, Value::String(self.previous.lexeme.to_string()))
+            }
+        }
+
+        fn declare_variable(&mut self) {
+            if self.scope_depth > 0 {
+                let name = self.previous;
+                let mut error = false;
+                for local in self.locals.iter().rev() {
+                    if local.depth != -1 && local.depth < self.scope_depth {
+                        break;
+                    }
+                    if local.name.lexeme == name.lexeme {
+                        error = true;
+                        break;
+                    }
+                }
+                if error {
+                    self.error("variable already defined");
+                } else {
+                    self.add_local(name);
+                }
+            }
+        }
+
+        fn add_local(&mut self, name: Token<'a>) {
+            if self.locals.len() > u8::MAX as usize {
+                self.error("too many local variables");
+                return;
+            }
+            self.locals.push(Local { name, depth: -1 });
         }
 
         fn define_variable(&mut self, chunk: &mut Chunk, global: u8) {
+            if self.scope_depth > 0 {
+                self.make_initialized();
+                return;
+            }
             self.emit_instruction(chunk, Instruction::DefineGlobal(global));
         }
 
+        fn make_initialized(&mut self) {
+            self.locals.last_mut().unwrap().depth = self.scope_depth;
+        }
+
+        fn resolve_local(&mut self, name: Token) -> Option<u8> {
+            if let Some((i, local)) = self
+                .locals
+                .iter()
+                .enumerate()
+                .rev()
+                .find(|&(_, local)| local.name.lexeme == name.lexeme)
+            {
+                if local.depth == -1 {
+                    self.error("self-initializer");
+                }
+                Some(i as u8)
+            } else {
+                None
+            }
+        }
+
         fn named_variable(&mut self, chunk: &mut Chunk, name: Token, can_assign: bool) {
-            let arg = self.make_constant(chunk, Value::String(name.lexeme.to_string()));
+            let (get_op, set_op, arg): (fn(u8) -> Instruction, fn(u8) -> Instruction, u8) =
+                if let Some(i) = self.resolve_local(name) {
+                    (Instruction::GetLocal, Instruction::SetLocal, i)
+                } else {
+                    let arg = self.make_constant(chunk, Value::String(name.lexeme.to_string()));
+                    (Instruction::GetGlobal, Instruction::SetGlobal, arg)
+                };
             if can_assign && self.matches(TokenType::Equal) {
                 self.expression(chunk);
-                self.emit_instruction(chunk, Instruction::SetGlobal(arg));
+                self.emit_instruction(chunk, set_op(arg));
             } else {
-                self.emit_instruction(chunk, Instruction::GetGlobal(arg));
+                self.emit_instruction(chunk, get_op(arg));
             }
         }
 
@@ -657,11 +733,29 @@ mod compiler {
             self.parse_precedence(chunk, Precedence::ASSIGNMENT);
         }
 
+        fn begin_scope(&mut self) {
+            self.scope_depth += 1;
+        }
+
+        fn end_scope(&mut self, chunk: &mut Chunk) {
+            self.scope_depth -= 1;
+            while let Some(_) = self.locals.pop_if(|x| x.depth > self.scope_depth) {
+                self.emit_instruction(chunk, Instruction::Pop);
+            }
+        }
+
         fn statement(&mut self, chunk: &mut Chunk) {
             if self.matches(TokenType::Print) {
                 self.expression(chunk);
                 self.consume(TokenType::Semicolon, "`;` expected after value");
                 self.emit_instruction(chunk, Instruction::Print);
+            } else if self.matches(TokenType::LeftBrace) {
+                self.begin_scope();
+                while !self.check(TokenType::RightBrace) && !self.check(TokenType::EOF) {
+                    self.declaration(chunk);
+                }
+                self.consume(TokenType::RightBrace, "`}` expected after block");
+                self.end_scope(chunk);
             } else {
                 self.expression(chunk);
                 self.consume(TokenType::Semicolon, "`;` expected after expression");
@@ -877,6 +971,12 @@ impl VM {
                         self.globals.remove(name);
                         return self.runtime_error(chunk, "undefined variable");
                     }
+                }
+                Instruction::GetLocal(slot) => {
+                    self.stack.push(self.stack[slot as usize].clone());
+                }
+                Instruction::SetLocal(slot) => {
+                    self.stack[slot as usize] = self.stack.last().unwrap().clone();
                 }
             }
             self.ip += 1;
