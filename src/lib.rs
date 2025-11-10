@@ -788,6 +788,42 @@ mod compiler {
                     self.statement(chunk);
                 }
                 self.patch_jump(chunk, else_jump, Instruction::Jump);
+            } else if self.matches(TokenType::For) {
+                self.begin_scope();
+                self.consume(TokenType::LeftParen, "`(` expected after `for`");
+                if self.matches(TokenType::Var) {
+                    self.var_declaration(chunk);
+                } else if !self.matches(TokenType::Semicolon) {
+                    self.expression(chunk);
+                    self.consume(TokenType::Semicolon, "`;` expected after initializer");
+                }
+                let mut loop_start = chunk.code.len();
+                let exit_jump = if !self.matches(TokenType::Semicolon) {
+                    self.expression(chunk);
+                    self.consume(TokenType::Semicolon, "`;` expected after condition");
+                    let exit_jump = self.emit_jump(chunk);
+                    self.emit_instruction(chunk, Instruction::Pop);
+                    Some(exit_jump)
+                } else {
+                    None
+                };
+                if !self.matches(TokenType::RightParen) {
+                    let body_jump = self.emit_jump(chunk);
+                    let increment_start = chunk.code.len();
+                    self.expression(chunk);
+                    self.emit_instruction(chunk, Instruction::Pop);
+                    self.consume(TokenType::RightParen, "`)` expected after increment");
+                    self.emit_loop(chunk, loop_start, Instruction::Jump);
+                    loop_start = increment_start;
+                    self.patch_jump(chunk, body_jump, Instruction::Jump);
+                }
+                self.statement(chunk);
+                self.emit_loop(chunk, loop_start, Instruction::Jump);
+                if let Some(jump) = exit_jump {
+                    self.patch_jump(chunk, jump, Instruction::JumpIfFalse);
+                    self.emit_instruction(chunk, Instruction::Pop);
+                }
+                self.end_scope(chunk);
             } else if self.matches(TokenType::While) {
                 let loop_start = chunk.code.len();
                 self.consume(TokenType::LeftParen, "`(` expected after `while`");
@@ -806,19 +842,23 @@ mod compiler {
             }
         }
 
+        fn var_declaration(&mut self, chunk: &mut Chunk) {
+            let global = self.parse_variable(chunk, "variable name expected");
+            if self.matches(TokenType::Equal) {
+                self.expression(chunk);
+            } else {
+                self.emit_instruction(chunk, Instruction::Nil);
+            }
+            self.consume(
+                TokenType::Semicolon,
+                "`;` expected after variable declaration",
+            );
+            self.define_variable(chunk, global);
+        }
+
         fn declaration(&mut self, chunk: &mut Chunk) {
             if self.matches(TokenType::Var) {
-                let global = self.parse_variable(chunk, "variable name expected");
-                if self.matches(TokenType::Equal) {
-                    self.expression(chunk);
-                } else {
-                    self.emit_instruction(chunk, Instruction::Nil);
-                }
-                self.consume(
-                    TokenType::Semicolon,
-                    "`;` expected after variable declaration",
-                );
-                self.define_variable(chunk, global);
+                self.var_declaration(chunk);
             } else {
                 self.statement(chunk);
             }
