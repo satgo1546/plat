@@ -324,8 +324,8 @@ pub enum Instruction {
     SetGlobal(u8),
     GetLocal(u8),
     SetLocal(u8),
-    Jump(u16),
-    JumpIfFalse(u16),
+    Jump(i16),
+    JumpIfFalse(i16),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -788,6 +788,17 @@ mod compiler {
                     self.statement(chunk);
                 }
                 self.patch_jump(chunk, else_jump, Instruction::Jump);
+            } else if self.matches(TokenType::While) {
+                let loop_start = chunk.code.len();
+                self.consume(TokenType::LeftParen, "`(` expected after `while`");
+                self.expression(chunk);
+                self.consume(TokenType::RightParen, "`)` expected after condition");
+                let exit_jump = self.emit_jump(chunk);
+                self.emit_instruction(chunk, Instruction::Pop);
+                self.statement(chunk);
+                self.emit_loop(chunk, loop_start, Instruction::Jump);
+                self.patch_jump(chunk, exit_jump, Instruction::JumpIfFalse);
+                self.emit_instruction(chunk, Instruction::Pop);
             } else {
                 self.expression(chunk);
                 self.consume(TokenType::Semicolon, "`;` expected after expression");
@@ -855,9 +866,30 @@ mod compiler {
             chunk.code.len() - 1
         }
 
-        fn patch_jump(&self, chunk: &mut Chunk, jump: usize, instruction: fn(u16) -> Instruction) {
-            let offset = chunk.code.len() - jump - 1;
-            chunk.code[jump] = instruction(offset as u16);
+        fn patch_jump(
+            &mut self,
+            chunk: &mut Chunk,
+            jump: usize,
+            instruction: fn(i16) -> Instruction,
+        ) {
+            let Ok(offset) = (chunk.code.len() - jump).try_into() else {
+                self.error("jump offset too large");
+                return;
+            };
+            chunk.code[jump] = instruction(offset);
+        }
+
+        fn emit_loop(
+            &mut self,
+            chunk: &mut Chunk,
+            loop_start: usize,
+            instruction: fn(i16) -> Instruction,
+        ) {
+            let Ok(offset) = (loop_start as isize - chunk.code.len() as isize).try_into() else {
+                self.error("loop body too large");
+                return;
+            };
+            self.emit_instruction(chunk, instruction(offset));
         }
     }
 }
@@ -1021,10 +1053,14 @@ impl VM {
                 Instruction::SetLocal(slot) => {
                     self.stack[slot as usize] = self.stack.last().unwrap().clone();
                 }
-                Instruction::Jump(offset) => self.ip += offset as usize,
+                Instruction::Jump(offset) => {
+                    self.ip = self.ip.wrapping_add_signed(offset as isize);
+                    continue;
+                }
                 Instruction::JumpIfFalse(offset) => {
                     if !self.stack.last().unwrap().is_truthy() {
-                        self.ip += offset as usize;
+                        self.ip = self.ip.wrapping_add_signed(offset as isize);
+                        continue;
                     }
                 }
             }
