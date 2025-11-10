@@ -299,8 +299,10 @@ mod scanner {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Default, Clone, Copy)]
 pub enum Instruction {
+    #[default]
+    NOP,
     Constant(u8),
     Nil,
     True,
@@ -322,6 +324,8 @@ pub enum Instruction {
     SetGlobal(u8),
     GetLocal(u8),
     SetLocal(u8),
+    Jump(u16),
+    JumpIfFalse(u16),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -756,6 +760,20 @@ mod compiler {
                 }
                 self.consume(TokenType::RightBrace, "`}` expected after block");
                 self.end_scope(chunk);
+            } else if self.matches(TokenType::If) {
+                self.consume(TokenType::LeftParen, "`(` expected after `if`");
+                self.expression(chunk);
+                self.consume(TokenType::RightParen, "`)` expected after condition");
+                let then_jump = self.emit_jump(chunk);
+                self.emit_instruction(chunk, Instruction::Pop);
+                self.statement(chunk);
+                let else_jump = self.emit_jump(chunk);
+                self.patch_jump(chunk, then_jump, Instruction::JumpIfFalse);
+                self.emit_instruction(chunk, Instruction::Pop);
+                if self.matches(TokenType::Else) {
+                    self.statement(chunk);
+                }
+                self.patch_jump(chunk, else_jump, Instruction::Jump);
             } else {
                 self.expression(chunk);
                 self.consume(TokenType::Semicolon, "`;` expected after expression");
@@ -817,6 +835,16 @@ mod compiler {
             let constant = self.make_constant(chunk, value);
             self.emit_instruction(chunk, Instruction::Constant(constant));
         }
+
+        fn emit_jump(&self, chunk: &mut Chunk) -> usize {
+            self.emit_instruction(chunk, Instruction::NOP);
+            chunk.code.len() - 1
+        }
+
+        fn patch_jump(&self, chunk: &mut Chunk, jump: usize, instruction: fn(u16) -> Instruction) {
+            let offset = chunk.code.len() - jump - 1;
+            chunk.code[jump] = instruction(offset as u16);
+        }
     }
 }
 
@@ -874,6 +902,7 @@ impl VM {
         self.stack.clear();
         loop {
             match chunk.code[self.ip] {
+                Instruction::NOP => {}
                 Instruction::Constant(constant) => {
                     let constant = chunk.constants[constant as usize].clone();
                     println!("{:?}", constant);
@@ -977,6 +1006,12 @@ impl VM {
                 }
                 Instruction::SetLocal(slot) => {
                     self.stack[slot as usize] = self.stack.last().unwrap().clone();
+                }
+                Instruction::Jump(offset) => self.ip += offset as usize,
+                Instruction::JumpIfFalse(offset) => {
+                    if !self.stack.last().unwrap().is_truthy() {
+                        self.ip += offset as usize;
+                    }
                 }
             }
             self.ip += 1;
