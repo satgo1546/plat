@@ -417,9 +417,7 @@ mod compiler {
     impl Precedence {
         pub const NONE: Self = Self(0);
         pub const ASSIGNMENT: Self = Self(1); // =
-        #[allow(unused)]
         pub const OR: Self = Self(2); // or
-        #[allow(unused)]
         pub const AND: Self = Self(3); // and
         pub const EQUALITY: Self = Self(4); // == !=
         pub const COMPARISON: Self = Self(5); // < <= > >=
@@ -635,6 +633,8 @@ mod compiler {
                 | TokenType::LessEqual
                 | TokenType::Greater
                 | TokenType::GreaterEqual => Precedence::COMPARISON,
+                TokenType::And => Precedence::AND,
+                TokenType::Or => Precedence::OR,
                 _ => Precedence::NONE,
             }
         }
@@ -724,6 +724,20 @@ mod compiler {
                             }
                             _ => unreachable!("match statements mismatch"),
                         }
+                    }
+                    TokenType::And => {
+                        let end_jump = self.emit_jump(chunk);
+                        self.emit_instruction(chunk, Instruction::Pop);
+                        self.parse_precedence(chunk, Precedence::AND);
+                        self.patch_jump(chunk, end_jump, Instruction::JumpIfFalse);
+                    }
+                    TokenType::Or => {
+                        let else_jump = self.emit_jump(chunk);
+                        let end_jump = self.emit_jump(chunk);
+                        self.patch_jump(chunk, else_jump, Instruction::JumpIfFalse);
+                        self.emit_instruction(chunk, Instruction::Pop);
+                        self.parse_precedence(chunk, Precedence::OR);
+                        self.patch_jump(chunk, end_jump, Instruction::Jump);
                     }
                     _ => unreachable!("unhandled TokenType having precedence other than None"),
                 }
