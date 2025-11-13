@@ -1,6 +1,8 @@
 use std::{
     collections::HashMap,
     fmt::{Debug, Display, Write},
+    rc::Rc,
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 mod scanner {
@@ -326,14 +328,17 @@ pub enum Instruction {
     SetLocal(u8),
     Jump(i16),
     JumpIfFalse(i16),
+    Call(u8),
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub enum Value {
     Nil,
     Boolean(bool),
     Number(f64),
     String(String),
+    Function(Rc<ObjFunction>),
+    Native(fn(Vec<Value>) -> Value),
 }
 
 impl Value {
@@ -346,6 +351,20 @@ impl Value {
     }
 }
 
+impl PartialEq for Value {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Nil, Self::Nil) => true,
+            (Self::Boolean(a), Self::Boolean(b)) => a == b,
+            (Self::Number(a), Self::Number(b)) => a == b,
+            (Self::String(a), Self::String(b)) => a == b,
+            (Self::Function(a), Self::Function(b)) => Rc::ptr_eq(a, b),
+            (Self::Native(a), Self::Native(b)) => std::ptr::fn_addr_eq(*a, *b),
+            _ => false,
+        }
+    }
+}
+
 impl Display for Value {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -353,10 +372,20 @@ impl Display for Value {
             Self::Boolean(x) => write!(f, "{}", x),
             Self::Number(x) => write!(f, "{}", x),
             Self::String(x) => f.write_str(x),
+            Self::Function(x) => write!(f, "<fn {}>", x.name),
+            Self::Native(_) => f.write_str("<native fn>"),
         }
     }
 }
 
+#[derive(Debug, Default, Clone)]
+pub struct ObjFunction {
+    arity: i32,
+    chunk: Chunk,
+    name: String,
+}
+
+#[derive(Default, Clone)]
 pub struct Chunk {
     code: Vec<Instruction>,
     lines: Vec<i32>,
@@ -406,8 +435,10 @@ impl Debug for Chunk {
 }
 
 mod compiler {
+    use std::rc::Rc;
+
     use crate::{
-        Chunk, Instruction, Value,
+        Chunk, Instruction, ObjFunction, Value,
         scanner::{Scanner, Token, TokenType},
     };
 
@@ -424,7 +455,6 @@ mod compiler {
         pub const TERM: Self = Self(6); // + -
         pub const FACTOR: Self = Self(7); // * /
         pub const UNARY: Self = Self(8); // ! -
-        #[allow(unused)]
         pub const CALL: Self = Self(9); // . ()
         #[allow(unused)]
         pub const PRIMARY: Self = Self(10);
@@ -435,12 +465,20 @@ mod compiler {
         depth: i32,
     }
 
+    #[derive(Debug, Clone, Copy)]
+    enum FunctionType {
+        Function,
+        Script,
+    }
+
     pub struct Compiler<'a> {
         scanner: Scanner<'a>,
         current: Token<'a>,
         previous: Token<'a>,
         had_error: bool,
         panic_mode: bool,
+        function: ObjFunction,
+        function_type: FunctionType,
         locals: Vec<Local<'a>>,
         scope_depth: i32,
     }
@@ -461,6 +499,12 @@ mod compiler {
                 },
                 had_error: false,
                 panic_mode: false,
+                function: ObjFunction {
+                    arity: 0,
+                    chunk: Chunk::new(),
+                    name: String::new(),
+                },
+                function_type: FunctionType::Script,
                 locals: Vec::new(),
                 scope_depth: 0,
             }
@@ -519,13 +563,13 @@ mod compiler {
             }
         }
 
-        fn parse_variable(&mut self, chunk: &mut Chunk, error_message: &str) -> u8 {
+        fn parse_variable(&mut self, error_message: &str) -> u8 {
             self.consume(TokenType::Identifier, error_message);
             self.declare_variable();
             if self.scope_depth > 0 {
                 0
             } else {
-                self.make_constant(chunk, Value::String(self.previous.lexeme.to_string()))
+                self.make_constant(Value::String(self.previous.lexeme.to_string()))
             }
         }
 
@@ -558,15 +602,18 @@ mod compiler {
             self.locals.push(Local { name, depth: -1 });
         }
 
-        fn define_variable(&mut self, chunk: &mut Chunk, global: u8) {
+        fn define_variable(&mut self, global: u8) {
             if self.scope_depth > 0 {
                 self.make_initialized();
                 return;
             }
-            self.emit_instruction(chunk, Instruction::DefineGlobal(global));
+            self.emit_instruction(Instruction::DefineGlobal(global));
         }
 
         fn make_initialized(&mut self) {
+            if self.scope_depth == 0 {
+                return;
+            }
             self.locals.last_mut().unwrap().depth = self.scope_depth;
         }
 
@@ -587,20 +634,39 @@ mod compiler {
             }
         }
 
-        fn named_variable(&mut self, chunk: &mut Chunk, name: Token, can_assign: bool) {
+        fn named_variable(&mut self, name: Token, can_assign: bool) {
             let (get_op, set_op, arg): (fn(u8) -> Instruction, fn(u8) -> Instruction, u8) =
                 if let Some(i) = self.resolve_local(name) {
                     (Instruction::GetLocal, Instruction::SetLocal, i)
                 } else {
-                    let arg = self.make_constant(chunk, Value::String(name.lexeme.to_string()));
+                    let arg = self.make_constant(Value::String(name.lexeme.to_string()));
                     (Instruction::GetGlobal, Instruction::SetGlobal, arg)
                 };
             if can_assign && self.matches(TokenType::Equal) {
-                self.expression(chunk);
-                self.emit_instruction(chunk, set_op(arg));
+                self.expression();
+                self.emit_instruction(set_op(arg));
             } else {
-                self.emit_instruction(chunk, get_op(arg));
+                self.emit_instruction(get_op(arg));
             }
+        }
+
+        fn argument_list(&mut self) -> u8 {
+            let mut count = 0u8;
+            loop {
+                if self.check(TokenType::RightParen) {
+                    break;
+                }
+                self.expression();
+                count = count.checked_add(1).unwrap_or_else(|| {
+                    self.error("too many arguments");
+                    0
+                });
+                if !self.matches(TokenType::Comma) {
+                    break;
+                }
+            }
+            self.consume(TokenType::RightParen, "`)` expected after arguments");
+            count
         }
 
         fn synchronize(&mut self) {
@@ -635,46 +701,47 @@ mod compiler {
                 | TokenType::GreaterEqual => Precedence::COMPARISON,
                 TokenType::And => Precedence::AND,
                 TokenType::Or => Precedence::OR,
+                TokenType::LeftParen => Precedence::CALL,
                 _ => Precedence::NONE,
             }
         }
 
-        fn parse_precedence(&mut self, chunk: &mut Chunk, base_precedence: Precedence) {
+        fn parse_precedence(&mut self, base_precedence: Precedence) {
             let can_assign = base_precedence <= Precedence::ASSIGNMENT;
             self.advance();
             match self.previous.token_type {
                 TokenType::LeftParen => {
-                    self.expression(chunk);
+                    self.expression();
                     self.consume(TokenType::RightParen, "`)` expected after expression");
                 }
                 TokenType::Bang => {
-                    self.parse_precedence(chunk, Precedence::UNARY);
-                    self.emit_instruction(chunk, Instruction::Not);
+                    self.parse_precedence(Precedence::UNARY);
+                    self.emit_instruction(Instruction::Not);
                 }
                 TokenType::Minus => {
-                    self.parse_precedence(chunk, Precedence::UNARY);
-                    self.emit_instruction(chunk, Instruction::Negate);
+                    self.parse_precedence(Precedence::UNARY);
+                    self.emit_instruction(Instruction::Negate);
                 }
                 TokenType::Nil => {
-                    self.emit_instruction(chunk, Instruction::Nil);
+                    self.emit_instruction(Instruction::Nil);
                 }
                 TokenType::True => {
-                    self.emit_instruction(chunk, Instruction::True);
+                    self.emit_instruction(Instruction::True);
                 }
                 TokenType::False => {
-                    self.emit_instruction(chunk, Instruction::False);
+                    self.emit_instruction(Instruction::False);
                 }
                 TokenType::Number => {
                     let value = self.previous.lexeme.parse();
                     let value = value.expect("tokenizer slip through?");
-                    self.emit_constant(chunk, Value::Number(value));
+                    self.emit_constant(Value::Number(value));
                 }
                 TokenType::String => {
                     let value = &self.previous.lexeme[1..self.previous.lexeme.len() - 1];
-                    self.emit_constant(chunk, Value::String(value.to_string()));
+                    self.emit_constant(Value::String(value.to_string()));
                 }
                 TokenType::Identifier => {
-                    self.named_variable(chunk, self.previous, can_assign);
+                    self.named_variable(self.previous, can_assign);
                 }
                 _ => {
                     self.error("expression expected");
@@ -697,47 +764,47 @@ mod compiler {
                     | TokenType::LessEqual
                     | TokenType::Greater
                     | TokenType::GreaterEqual) => {
-                        self.parse_precedence(chunk, Precedence(precedence.0 + 1));
+                        self.parse_precedence(Precedence(precedence.0 + 1));
                         match token_type {
-                            TokenType::Plus => self.emit_instruction(chunk, Instruction::Add),
-                            TokenType::Minus => self.emit_instruction(chunk, Instruction::Subtract),
-                            TokenType::Star => self.emit_instruction(chunk, Instruction::Multiply),
-                            TokenType::Slash => self.emit_instruction(chunk, Instruction::Divide),
-                            TokenType::EqualEqual => {
-                                self.emit_instruction(chunk, Instruction::Equal)
-                            }
+                            TokenType::Plus => self.emit_instruction(Instruction::Add),
+                            TokenType::Minus => self.emit_instruction(Instruction::Subtract),
+                            TokenType::Star => self.emit_instruction(Instruction::Multiply),
+                            TokenType::Slash => self.emit_instruction(Instruction::Divide),
+                            TokenType::EqualEqual => self.emit_instruction(Instruction::Equal),
                             TokenType::BangEqual => {
-                                self.emit_instruction(chunk, Instruction::Equal);
-                                self.emit_instruction(chunk, Instruction::Not);
+                                self.emit_instruction(Instruction::Equal);
+                                self.emit_instruction(Instruction::Not);
                             }
-                            TokenType::Less => self.emit_instruction(chunk, Instruction::Less),
+                            TokenType::Less => self.emit_instruction(Instruction::Less),
                             TokenType::LessEqual => {
-                                self.emit_instruction(chunk, Instruction::Greater);
-                                self.emit_instruction(chunk, Instruction::Not);
+                                self.emit_instruction(Instruction::Greater);
+                                self.emit_instruction(Instruction::Not);
                             }
-                            TokenType::Greater => {
-                                self.emit_instruction(chunk, Instruction::Greater)
-                            }
+                            TokenType::Greater => self.emit_instruction(Instruction::Greater),
                             TokenType::GreaterEqual => {
-                                self.emit_instruction(chunk, Instruction::Less);
-                                self.emit_instruction(chunk, Instruction::Not);
+                                self.emit_instruction(Instruction::Less);
+                                self.emit_instruction(Instruction::Not);
                             }
                             _ => unreachable!("match statements mismatch"),
                         }
                     }
                     TokenType::And => {
-                        let end_jump = self.emit_jump(chunk);
-                        self.emit_instruction(chunk, Instruction::Pop);
-                        self.parse_precedence(chunk, Precedence::AND);
-                        self.patch_jump(chunk, end_jump, Instruction::JumpIfFalse);
+                        let end_jump = self.emit_jump();
+                        self.emit_instruction(Instruction::Pop);
+                        self.parse_precedence(Precedence::AND);
+                        self.patch_jump(end_jump, Instruction::JumpIfFalse);
                     }
                     TokenType::Or => {
-                        let else_jump = self.emit_jump(chunk);
-                        let end_jump = self.emit_jump(chunk);
-                        self.patch_jump(chunk, else_jump, Instruction::JumpIfFalse);
-                        self.emit_instruction(chunk, Instruction::Pop);
-                        self.parse_precedence(chunk, Precedence::OR);
-                        self.patch_jump(chunk, end_jump, Instruction::Jump);
+                        let else_jump = self.emit_jump();
+                        let end_jump = self.emit_jump();
+                        self.patch_jump(else_jump, Instruction::JumpIfFalse);
+                        self.emit_instruction(Instruction::Pop);
+                        self.parse_precedence(Precedence::OR);
+                        self.patch_jump(end_jump, Instruction::Jump);
+                    }
+                    TokenType::LeftParen => {
+                        let arg_count = self.argument_list();
+                        self.emit_instruction(Instruction::Call(arg_count));
                     }
                     _ => unreachable!("unhandled TokenType having precedence other than None"),
                 }
@@ -747,148 +814,225 @@ mod compiler {
             }
         }
 
-        fn expression(&mut self, chunk: &mut Chunk) {
-            self.parse_precedence(chunk, Precedence::ASSIGNMENT);
+        fn expression(&mut self) {
+            self.parse_precedence(Precedence::ASSIGNMENT);
         }
 
         fn begin_scope(&mut self) {
             self.scope_depth += 1;
         }
 
-        fn end_scope(&mut self, chunk: &mut Chunk) {
+        fn end_scope(&mut self) {
             self.scope_depth -= 1;
             while let Some(_) = self.locals.pop_if(|x| x.depth > self.scope_depth) {
-                self.emit_instruction(chunk, Instruction::Pop);
+                self.emit_instruction(Instruction::Pop);
             }
         }
 
-        fn statement(&mut self, chunk: &mut Chunk) {
+        fn block(&mut self) {
+            self.begin_scope();
+            while !self.check(TokenType::RightBrace) && !self.check(TokenType::EOF) {
+                self.declaration();
+            }
+            self.consume(TokenType::RightBrace, "`}` expected after block");
+            self.end_scope();
+        }
+
+        fn statement(&mut self) {
             if self.matches(TokenType::Print) {
-                self.expression(chunk);
+                self.expression();
                 self.consume(TokenType::Semicolon, "`;` expected after value");
-                self.emit_instruction(chunk, Instruction::Print);
+                self.emit_instruction(Instruction::Print);
             } else if self.matches(TokenType::LeftBrace) {
-                self.begin_scope();
-                while !self.check(TokenType::RightBrace) && !self.check(TokenType::EOF) {
-                    self.declaration(chunk);
-                }
-                self.consume(TokenType::RightBrace, "`}` expected after block");
-                self.end_scope(chunk);
+                self.block();
             } else if self.matches(TokenType::If) {
                 self.consume(TokenType::LeftParen, "`(` expected after `if`");
-                self.expression(chunk);
+                self.expression();
                 self.consume(TokenType::RightParen, "`)` expected after condition");
-                let then_jump = self.emit_jump(chunk);
-                self.emit_instruction(chunk, Instruction::Pop);
-                self.statement(chunk);
-                let else_jump = self.emit_jump(chunk);
-                self.patch_jump(chunk, then_jump, Instruction::JumpIfFalse);
-                self.emit_instruction(chunk, Instruction::Pop);
+                let then_jump = self.emit_jump();
+                self.emit_instruction(Instruction::Pop);
+                self.statement();
+                let else_jump = self.emit_jump();
+                self.patch_jump(then_jump, Instruction::JumpIfFalse);
+                self.emit_instruction(Instruction::Pop);
                 if self.matches(TokenType::Else) {
-                    self.statement(chunk);
+                    self.statement();
                 }
-                self.patch_jump(chunk, else_jump, Instruction::Jump);
+                self.patch_jump(else_jump, Instruction::Jump);
             } else if self.matches(TokenType::For) {
                 self.begin_scope();
                 self.consume(TokenType::LeftParen, "`(` expected after `for`");
                 if self.matches(TokenType::Var) {
-                    self.var_declaration(chunk);
+                    self.var_declaration();
                 } else if !self.matches(TokenType::Semicolon) {
-                    self.expression(chunk);
+                    self.expression();
                     self.consume(TokenType::Semicolon, "`;` expected after initializer");
                 }
-                let mut loop_start = chunk.code.len();
+                let mut loop_start = self.function.chunk.code.len();
                 let exit_jump = if !self.matches(TokenType::Semicolon) {
-                    self.expression(chunk);
+                    self.expression();
                     self.consume(TokenType::Semicolon, "`;` expected after condition");
-                    let exit_jump = self.emit_jump(chunk);
-                    self.emit_instruction(chunk, Instruction::Pop);
+                    let exit_jump = self.emit_jump();
+                    self.emit_instruction(Instruction::Pop);
                     Some(exit_jump)
                 } else {
                     None
                 };
                 if !self.matches(TokenType::RightParen) {
-                    let body_jump = self.emit_jump(chunk);
-                    let increment_start = chunk.code.len();
-                    self.expression(chunk);
-                    self.emit_instruction(chunk, Instruction::Pop);
+                    let body_jump = self.emit_jump();
+                    let increment_start = self.function.chunk.code.len();
+                    self.expression();
+                    self.emit_instruction(Instruction::Pop);
                     self.consume(TokenType::RightParen, "`)` expected after increment");
-                    self.emit_loop(chunk, loop_start, Instruction::Jump);
+                    self.emit_loop(loop_start, Instruction::Jump);
                     loop_start = increment_start;
-                    self.patch_jump(chunk, body_jump, Instruction::Jump);
+                    self.patch_jump(body_jump, Instruction::Jump);
                 }
-                self.statement(chunk);
-                self.emit_loop(chunk, loop_start, Instruction::Jump);
+                self.statement();
+                self.emit_loop(loop_start, Instruction::Jump);
                 if let Some(jump) = exit_jump {
-                    self.patch_jump(chunk, jump, Instruction::JumpIfFalse);
-                    self.emit_instruction(chunk, Instruction::Pop);
+                    self.patch_jump(jump, Instruction::JumpIfFalse);
+                    self.emit_instruction(Instruction::Pop);
                 }
-                self.end_scope(chunk);
+                self.end_scope();
             } else if self.matches(TokenType::While) {
-                let loop_start = chunk.code.len();
+                let loop_start = self.function.chunk.code.len();
                 self.consume(TokenType::LeftParen, "`(` expected after `while`");
-                self.expression(chunk);
+                self.expression();
                 self.consume(TokenType::RightParen, "`)` expected after condition");
-                let exit_jump = self.emit_jump(chunk);
-                self.emit_instruction(chunk, Instruction::Pop);
-                self.statement(chunk);
-                self.emit_loop(chunk, loop_start, Instruction::Jump);
-                self.patch_jump(chunk, exit_jump, Instruction::JumpIfFalse);
-                self.emit_instruction(chunk, Instruction::Pop);
+                let exit_jump = self.emit_jump();
+                self.emit_instruction(Instruction::Pop);
+                self.statement();
+                self.emit_loop(loop_start, Instruction::Jump);
+                self.patch_jump(exit_jump, Instruction::JumpIfFalse);
+                self.emit_instruction(Instruction::Pop);
+            } else if self.matches(TokenType::Return) {
+                if let FunctionType::Script = self.function_type {
+                    self.error("stray return");
+                }
+                if self.matches(TokenType::Semicolon) {
+                    self.emit_instruction(Instruction::Nil);
+                } else {
+                    self.expression();
+                    self.consume(TokenType::Semicolon, "`;` expected after return value");
+                }
+                self.emit_instruction(Instruction::Return);
             } else {
-                self.expression(chunk);
+                self.expression();
                 self.consume(TokenType::Semicolon, "`;` expected after expression");
-                self.emit_instruction(chunk, Instruction::Pop);
+                self.emit_instruction(Instruction::Pop);
             }
         }
 
-        fn var_declaration(&mut self, chunk: &mut Chunk) {
-            let global = self.parse_variable(chunk, "variable name expected");
+        fn var_declaration(&mut self) {
+            let global = self.parse_variable("variable name expected");
             if self.matches(TokenType::Equal) {
-                self.expression(chunk);
+                self.expression();
             } else {
-                self.emit_instruction(chunk, Instruction::Nil);
+                self.emit_instruction(Instruction::Nil);
             }
             self.consume(
                 TokenType::Semicolon,
                 "`;` expected after variable declaration",
             );
-            self.define_variable(chunk, global);
+            self.define_variable(global);
         }
 
-        fn declaration(&mut self, chunk: &mut Chunk) {
+        fn function(&mut self, function_type: FunctionType) {
+            let previous_function_type = self.function_type;
+            self.function_type = function_type;
+            let previous_function = std::mem::replace(
+                &mut self.function,
+                ObjFunction {
+                    arity: 0,
+                    chunk: Chunk::new(),
+                    name: self.previous.lexeme.to_string(),
+                },
+            );
+            let previous_locals = std::mem::replace(
+                &mut self.locals,
+                vec![Local {
+                    name: Token {
+                        token_type: TokenType::EOF,
+                        lexeme: "",
+                        line: 0,
+                    },
+                    depth: 0,
+                }],
+            );
+            let previous_scope_depth = self.scope_depth;
+            self.scope_depth = 0;
+            self.begin_scope();
+            self.consume(TokenType::LeftParen, "`(` expected after function name");
+            loop {
+                if self.check(TokenType::RightParen) {
+                    break;
+                }
+                self.function.arity += 1;
+                if self.function.arity > 255 {
+                    self.error("too many parameters");
+                }
+                let constant = self.parse_variable("parameter name expected");
+                self.define_variable(constant);
+                if !self.matches(TokenType::Comma) {
+                    break;
+                }
+            }
+            self.consume(TokenType::RightParen, "`)` expected after parameters");
+            self.consume(TokenType::LeftBrace, "`{` expected before function body");
+            self.block();
+            self.emit_instruction(Instruction::Nil);
+            self.emit_instruction(Instruction::Return);
+            let function = std::mem::replace(&mut self.function, previous_function);
+            self.function_type = previous_function_type;
+            self.locals = previous_locals;
+            self.scope_depth = previous_scope_depth;
+            self.emit_constant(Value::Function(Rc::new(function)));
+        }
+
+        fn fun_declaration(&mut self) {
+            let global = self.parse_variable("function name expected");
+            self.make_initialized();
+            self.function(FunctionType::Function);
+            self.define_variable(global);
+        }
+
+        fn declaration(&mut self) {
             if self.matches(TokenType::Var) {
-                self.var_declaration(chunk);
+                self.var_declaration();
+            } else if self.matches(TokenType::Fun) {
+                self.fun_declaration();
             } else {
-                self.statement(chunk);
+                self.statement();
             }
             if self.panic_mode {
                 self.synchronize();
             }
         }
 
-        pub fn compile(&mut self, chunk: &mut Chunk) -> Result<(), ()> {
+        pub fn compile(&mut self) -> Result<ObjFunction, ()> {
             self.advance();
             while !self.matches(TokenType::EOF) {
-                self.declaration(chunk);
+                self.declaration();
             }
             self.consume(TokenType::EOF, "end of expression expected");
             if self.had_error {
                 return Err(());
             }
-            self.emit_instruction(chunk, Instruction::Return);
+            self.emit_instruction(Instruction::Nil);
+            self.emit_instruction(Instruction::Return);
             if !self.had_error {
-                println!("{:?}", chunk);
+                println!("{:?}", self.function.chunk);
             }
-            Ok(())
+            Ok(std::mem::take(&mut self.function))
         }
 
-        fn emit_instruction(&self, chunk: &mut Chunk, instruction: Instruction) {
-            chunk.write(instruction, self.previous.line);
+        fn emit_instruction(&mut self, instruction: Instruction) {
+            self.function.chunk.write(instruction, self.previous.line);
         }
 
-        fn make_constant(&mut self, chunk: &mut Chunk, value: Value) -> u8 {
-            if let Some(constant) = chunk.add_constant(value) {
+        fn make_constant(&mut self, value: Value) -> u8 {
+            if let Some(constant) = self.function.chunk.add_constant(value) {
                 constant
             } else {
                 self.error("too many constants in one chunk");
@@ -896,47 +1040,44 @@ mod compiler {
             }
         }
 
-        fn emit_constant(&mut self, chunk: &mut Chunk, value: Value) {
-            let constant = self.make_constant(chunk, value);
-            self.emit_instruction(chunk, Instruction::Constant(constant));
+        fn emit_constant(&mut self, value: Value) {
+            let constant = self.make_constant(value);
+            self.emit_instruction(Instruction::Constant(constant));
         }
 
-        fn emit_jump(&self, chunk: &mut Chunk) -> usize {
-            self.emit_instruction(chunk, Instruction::NOP);
-            chunk.code.len() - 1
+        fn emit_jump(&mut self) -> usize {
+            self.emit_instruction(Instruction::NOP);
+            self.function.chunk.code.len() - 1
         }
 
-        fn patch_jump(
-            &mut self,
-            chunk: &mut Chunk,
-            jump: usize,
-            instruction: fn(i16) -> Instruction,
-        ) {
-            let Ok(offset) = (chunk.code.len() - jump).try_into() else {
+        fn patch_jump(&mut self, jump: usize, instruction: fn(i16) -> Instruction) {
+            let Ok(offset) = (self.function.chunk.code.len() - jump).try_into() else {
                 self.error("jump offset too large");
                 return;
             };
-            chunk.code[jump] = instruction(offset);
+            self.function.chunk.code[jump] = instruction(offset);
         }
 
-        fn emit_loop(
-            &mut self,
-            chunk: &mut Chunk,
-            loop_start: usize,
-            instruction: fn(i16) -> Instruction,
-        ) {
-            let Ok(offset) = (loop_start as isize - chunk.code.len() as isize).try_into() else {
+        fn emit_loop(&mut self, loop_start: usize, instruction: fn(i16) -> Instruction) {
+            let Ok(offset) =
+                (loop_start as isize - self.function.chunk.code.len() as isize).try_into()
+            else {
                 self.error("loop body too large");
                 return;
             };
-            self.emit_instruction(chunk, instruction(offset));
+            self.emit_instruction(instruction(offset));
         }
     }
 }
 
-pub struct VM {
+pub struct CallFrame {
+    function: Rc<ObjFunction>,
     ip: usize,
     stack: Vec<Value>,
+}
+
+pub struct VM {
+    frames: Vec<CallFrame>,
     globals: HashMap<String, Value>,
 }
 
@@ -950,161 +1091,220 @@ pub type InterpretResult = Result<(), InterpretError>;
 impl VM {
     pub fn new() -> VM {
         VM {
-            ip: 0,
-            stack: Vec::new(),
-            globals: HashMap::new(),
+            frames: Vec::new(),
+            globals: HashMap::from([(
+                "clock".to_string(),
+                Value::Native(|_| {
+                    Value::Number(match SystemTime::now().duration_since(UNIX_EPOCH) {
+                        Ok(x) => x.as_secs_f64(),
+                        Err(x) => -x.duration().as_secs_f64(),
+                    })
+                }),
+            )]),
         }
     }
 
     pub fn interpret(&mut self, source: &str) -> InterpretResult {
-        let mut chunk = Chunk::new();
         let mut compiler = compiler::Compiler::new(source);
-        if let Err(_) = compiler.compile(&mut chunk) {
-            return Err(InterpretError::CompileError);
+        match compiler.compile() {
+            Ok(f) => self.run(Rc::new(f)),
+            Err(_) => Err(InterpretError::CompileError),
         }
-        self.run(&chunk)
     }
 
-    fn runtime_error(&mut self, chunk: &Chunk, message: &str) -> InterpretResult {
-        eprintln!("Runtime error: {} (line {})", message, chunk.lines[self.ip]);
-        self.stack.clear();
+    fn runtime_error(&mut self, message: &str) -> InterpretResult {
+        eprintln!("Runtime error: {}", message);
+        for frame in self.frames.iter().rev() {
+            eprintln!(
+                "\tat {} (line {})",
+                if frame.function.name.is_empty() {
+                    "(main)"
+                } else {
+                    &frame.function.name
+                },
+                frame.function.chunk.lines[frame.ip]
+            );
+        }
+        self.frames.clear();
         Err(InterpretError::RuntimeError)
     }
 
-    fn binary_op(&mut self, chunk: &Chunk, op: fn(f64, f64) -> Value) -> InterpretResult {
-        let b = self.stack.pop().unwrap();
-        let a = self.stack.pop().unwrap();
+    fn binary_op(&mut self, op: fn(f64, f64) -> Value) -> InterpretResult {
+        let frame = self.frames.last_mut().unwrap();
+        let b = frame.stack.pop().unwrap();
+        let a = frame.stack.pop().unwrap();
         match (a, b) {
             (Value::Number(a), Value::Number(b)) => {
-                self.stack.push(op(a, b));
+                frame.stack.push(op(a, b));
                 Ok(())
             }
-            _ => self.runtime_error(chunk, "operands must be numbers"),
+            _ => self.runtime_error("operands must be numbers"),
         }
     }
 
-    fn run(&mut self, chunk: &Chunk) -> InterpretResult {
-        self.ip = 0;
-        self.stack.clear();
+    fn run(&mut self, function: Rc<ObjFunction>) -> InterpretResult {
+        self.frames.clear();
+        self.frames.push(CallFrame {
+            function,
+            ip: 0,
+            stack: Vec::new(),
+        });
         loop {
-            match chunk.code[self.ip] {
+            let frame = self.frames.last_mut().unwrap();
+            match frame.function.chunk.code[frame.ip] {
                 Instruction::NOP => {}
                 Instruction::Constant(constant) => {
-                    let constant = chunk.constants[constant as usize].clone();
-                    println!("{:?}", constant);
-                    self.stack.push(constant);
+                    let constant = frame.function.chunk.constants[constant as usize].clone();
+                    frame.stack.push(constant);
                 }
                 Instruction::Nil => {
-                    self.stack.push(Value::Nil);
+                    frame.stack.push(Value::Nil);
                 }
                 Instruction::True => {
-                    self.stack.push(Value::Boolean(true));
+                    frame.stack.push(Value::Boolean(true));
                 }
                 Instruction::False => {
-                    self.stack.push(Value::Boolean(false));
+                    frame.stack.push(Value::Boolean(false));
                 }
                 Instruction::Add => {
-                    let b = self.stack.pop().unwrap();
-                    let a = self.stack.pop().unwrap();
-                    self.stack.push(match (a, b) {
+                    let b = frame.stack.pop().unwrap();
+                    let a = frame.stack.pop().unwrap();
+                    frame.stack.push(match (a, b) {
                         (a @ Value::String(_), b) | (a, b @ Value::String(_)) => {
                             Value::String(format!("{}{}", a, b))
                         }
                         (Value::Number(a), Value::Number(b)) => Value::Number(a + b),
                         _ => {
                             return self.runtime_error(
-                                chunk,
                                 "operands must consist of two numbers or at least one string",
                             );
                         }
                     })
                 }
                 Instruction::Subtract => {
-                    self.binary_op(chunk, |a, b| Value::Number(a - b))?;
+                    self.binary_op(|a, b| Value::Number(a - b))?;
                 }
                 Instruction::Multiply => {
-                    self.binary_op(chunk, |a, b| Value::Number(a * b))?;
+                    self.binary_op(|a, b| Value::Number(a * b))?;
                 }
                 Instruction::Divide => {
-                    self.binary_op(chunk, |a, b| Value::Number(a / b))?;
+                    self.binary_op(|a, b| Value::Number(a / b))?;
                 }
                 Instruction::Equal => {
-                    let b = self.stack.pop().unwrap();
-                    let a = self.stack.pop().unwrap();
-                    self.stack.push(Value::Boolean(a == b));
+                    let b = frame.stack.pop().unwrap();
+                    let a = frame.stack.pop().unwrap();
+                    frame.stack.push(Value::Boolean(a == b));
                 }
                 Instruction::Less => {
-                    self.binary_op(chunk, |a, b| Value::Boolean(a < b))?;
+                    self.binary_op(|a, b| Value::Boolean(a < b))?;
                 }
                 Instruction::Greater => {
-                    self.binary_op(chunk, |a, b| Value::Boolean(a > b))?;
+                    self.binary_op(|a, b| Value::Boolean(a > b))?;
                 }
                 Instruction::Not => {
-                    let value = self.stack.last_mut().unwrap();
+                    let value = frame.stack.last_mut().unwrap();
                     *value = Value::Boolean(!value.is_truthy());
                 }
                 Instruction::Negate => {
-                    let value = self.stack.last_mut().unwrap();
+                    let value = frame.stack.last_mut().unwrap();
                     match value {
                         Value::Number(x) => *x = -*x,
-                        _ => return self.runtime_error(chunk, "operand must be number"),
+                        _ => return self.runtime_error("operand must be number"),
                     }
                 }
                 Instruction::Pop => {
-                    self.stack.pop().unwrap();
+                    frame.stack.pop().unwrap();
                 }
                 Instruction::Print => {
-                    let value = self.stack.pop().unwrap();
+                    let value = frame.stack.pop().unwrap();
                     println!("{}", value);
                 }
                 Instruction::Return => {
-                    return Ok(());
+                    let result = frame.stack.pop().unwrap();
+                    self.frames.pop();
+                    match self.frames.last_mut() {
+                        Some(frame) => frame.stack.push(result),
+                        None => return Ok(()),
+                    }
                 }
                 Instruction::DefineGlobal(name) => {
-                    let Value::String(name) = &chunk.constants[name as usize] else {
+                    let Value::String(name) = &frame.function.chunk.constants[name as usize] else {
                         panic!("bad operand of DefineGlobal")
                     };
-                    self.globals.insert(name.clone(), self.stack.pop().unwrap());
+                    self.globals
+                        .insert(name.clone(), frame.stack.pop().unwrap());
                 }
                 Instruction::GetGlobal(name) => {
-                    let Value::String(name) = &chunk.constants[name as usize] else {
+                    let Value::String(name) = &frame.function.chunk.constants[name as usize] else {
                         panic!("bad operand of GetGlobal")
                     };
                     let Some(value) = self.globals.get(name) else {
-                        return self.runtime_error(chunk, "undefined variable");
+                        return self.runtime_error("undefined variable");
                     };
-                    self.stack.push(value.clone());
+                    frame.stack.push(value.clone());
                 }
                 Instruction::SetGlobal(name) => {
-                    let Value::String(name) = &chunk.constants[name as usize] else {
+                    let Value::String(name) = &frame.function.chunk.constants[name as usize] else {
                         panic!("bad operand of SetGlobal")
                     };
                     if let None = self
                         .globals
-                        .insert(name.clone(), self.stack.last().unwrap().clone())
+                        .insert(name.clone(), frame.stack.last().unwrap().clone())
                     {
                         self.globals.remove(name);
-                        return self.runtime_error(chunk, "undefined variable");
+                        return self.runtime_error("undefined variable");
                     }
                 }
                 Instruction::GetLocal(slot) => {
-                    self.stack.push(self.stack[slot as usize].clone());
+                    frame.stack.push(frame.stack[slot as usize].clone());
                 }
                 Instruction::SetLocal(slot) => {
-                    self.stack[slot as usize] = self.stack.last().unwrap().clone();
+                    frame.stack[slot as usize] = frame.stack.last().unwrap().clone();
                 }
                 Instruction::Jump(offset) => {
-                    self.ip = self.ip.wrapping_add_signed(offset as isize);
+                    frame.ip = frame.ip.wrapping_add_signed(offset as isize);
                     continue;
                 }
                 Instruction::JumpIfFalse(offset) => {
-                    if !self.stack.last().unwrap().is_truthy() {
-                        self.ip = self.ip.wrapping_add_signed(offset as isize);
+                    if !frame.stack.last().unwrap().is_truthy() {
+                        frame.ip = frame.ip.wrapping_add_signed(offset as isize);
                         continue;
                     }
                 }
+                Instruction::Call(arg_count) => {
+                    let mut stack = frame
+                        .stack
+                        .split_off(frame.stack.len() - arg_count as usize - 1);
+                    match &stack[0] {
+                        Value::Function(function) => {
+                            let function = Rc::clone(function);
+
+                            if arg_count as i32 != function.arity {
+                                return self.runtime_error(&format!(
+                                    "expected {} arguments but got {}",
+                                    function.arity, arg_count
+                                ));
+                            }
+                            self.frames.push(CallFrame {
+                                function,
+                                ip: 0,
+                                stack,
+                            });
+                            continue;
+                        }
+                        Value::Native(_) => {
+                            let Value::Native(native) = stack.remove(0) else {
+                                panic!()
+                            };
+                            frame.stack.push(native(stack));
+                        }
+                        _ => return self.runtime_error("bad callee"),
+                    }
+                }
             }
-            self.ip += 1;
+            // Re-borrow to make the borrow checker happy 😾
+            let frame = self.frames.last_mut().unwrap();
+            frame.ip += 1;
         }
     }
 }
