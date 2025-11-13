@@ -477,6 +477,10 @@ mod compiler {
         previous: Token<'a>,
         had_error: bool,
         panic_mode: bool,
+        frames: Vec<CompilerFrame<'a>>,
+    }
+
+    pub struct CompilerFrame<'a> {
         function: ObjFunction,
         function_type: FunctionType,
         locals: Vec<Local<'a>>,
@@ -499,14 +503,16 @@ mod compiler {
                 },
                 had_error: false,
                 panic_mode: false,
-                function: ObjFunction {
-                    arity: 0,
-                    chunk: Chunk::new(),
-                    name: String::new(),
-                },
-                function_type: FunctionType::Script,
-                locals: Vec::new(),
-                scope_depth: 0,
+                frames: vec![CompilerFrame {
+                    function: ObjFunction {
+                        arity: 0,
+                        chunk: Chunk::new(),
+                        name: String::new(),
+                    },
+                    function_type: FunctionType::Script,
+                    locals: Vec::new(),
+                    scope_depth: 0,
+                }],
             }
         }
 
@@ -566,7 +572,8 @@ mod compiler {
         fn parse_variable(&mut self, error_message: &str) -> u8 {
             self.consume(TokenType::Identifier, error_message);
             self.declare_variable();
-            if self.scope_depth > 0 {
+            let frame = self.frames.last().unwrap();
+            if frame.scope_depth > 0 {
                 0
             } else {
                 self.make_constant(Value::String(self.previous.lexeme.to_string()))
@@ -574,11 +581,12 @@ mod compiler {
         }
 
         fn declare_variable(&mut self) {
-            if self.scope_depth > 0 {
+            let frame = self.frames.last().unwrap();
+            if frame.scope_depth > 0 {
                 let name = self.previous;
                 let mut error = false;
-                for local in self.locals.iter().rev() {
-                    if local.depth != -1 && local.depth < self.scope_depth {
+                for local in frame.locals.iter().rev() {
+                    if local.depth != -1 && local.depth < frame.scope_depth {
                         break;
                     }
                     if local.name.lexeme == name.lexeme {
@@ -595,15 +603,16 @@ mod compiler {
         }
 
         fn add_local(&mut self, name: Token<'a>) {
-            if self.locals.len() > u8::MAX as usize {
+            let frame = self.frames.last_mut().unwrap();
+            if frame.locals.len() > u8::MAX as usize {
                 self.error("too many local variables");
                 return;
             }
-            self.locals.push(Local { name, depth: -1 });
+            frame.locals.push(Local { name, depth: -1 });
         }
 
         fn define_variable(&mut self, global: u8) {
-            if self.scope_depth > 0 {
+            if self.frames.last().unwrap().scope_depth > 0 {
                 self.make_initialized();
                 return;
             }
@@ -611,14 +620,16 @@ mod compiler {
         }
 
         fn make_initialized(&mut self) {
-            if self.scope_depth == 0 {
+            let frame = self.frames.last_mut().unwrap();
+            if frame.scope_depth == 0 {
                 return;
             }
-            self.locals.last_mut().unwrap().depth = self.scope_depth;
+            frame.locals.last_mut().unwrap().depth = frame.scope_depth;
         }
 
         fn resolve_local(&mut self, name: Token) -> Option<u8> {
-            if let Some((i, local)) = self
+            let frame = self.frames.last().unwrap();
+            if let Some((i, local)) = frame
                 .locals
                 .iter()
                 .enumerate()
@@ -819,12 +830,18 @@ mod compiler {
         }
 
         fn begin_scope(&mut self) {
-            self.scope_depth += 1;
+            let frame = self.frames.last_mut().unwrap();
+            frame.scope_depth += 1;
         }
 
         fn end_scope(&mut self) {
-            self.scope_depth -= 1;
-            while let Some(_) = self.locals.pop_if(|x| x.depth > self.scope_depth) {
+            let frame = self.frames.last_mut().unwrap();
+            frame.scope_depth -= 1;
+            let mut n = 0usize;
+            while let Some(_) = frame.locals.pop_if(|x| x.depth > frame.scope_depth) {
+                n += 1;
+            }
+            for _ in 0..n {
                 self.emit_instruction(Instruction::Pop);
             }
         }
@@ -868,7 +885,7 @@ mod compiler {
                     self.expression();
                     self.consume(TokenType::Semicolon, "`;` expected after initializer");
                 }
-                let mut loop_start = self.function.chunk.code.len();
+                let mut loop_start = self.chunk_len();
                 let exit_jump = if !self.matches(TokenType::Semicolon) {
                     self.expression();
                     self.consume(TokenType::Semicolon, "`;` expected after condition");
@@ -880,7 +897,7 @@ mod compiler {
                 };
                 if !self.matches(TokenType::RightParen) {
                     let body_jump = self.emit_jump();
-                    let increment_start = self.function.chunk.code.len();
+                    let increment_start = self.chunk_len();
                     self.expression();
                     self.emit_instruction(Instruction::Pop);
                     self.consume(TokenType::RightParen, "`)` expected after increment");
@@ -896,7 +913,7 @@ mod compiler {
                 }
                 self.end_scope();
             } else if self.matches(TokenType::While) {
-                let loop_start = self.function.chunk.code.len();
+                let loop_start = self.chunk_len();
                 self.consume(TokenType::LeftParen, "`(` expected after `while`");
                 self.expression();
                 self.consume(TokenType::RightParen, "`)` expected after condition");
@@ -907,7 +924,7 @@ mod compiler {
                 self.patch_jump(exit_jump, Instruction::JumpIfFalse);
                 self.emit_instruction(Instruction::Pop);
             } else if self.matches(TokenType::Return) {
-                if let FunctionType::Script = self.function_type {
+                if let FunctionType::Script = self.frames.last().unwrap().function_type {
                     self.error("stray return");
                 }
                 if self.matches(TokenType::Semicolon) {
@@ -939,19 +956,14 @@ mod compiler {
         }
 
         fn function(&mut self, function_type: FunctionType) {
-            let previous_function_type = self.function_type;
-            self.function_type = function_type;
-            let previous_function = std::mem::replace(
-                &mut self.function,
-                ObjFunction {
+            self.frames.push(CompilerFrame {
+                function: ObjFunction {
                     arity: 0,
                     chunk: Chunk::new(),
                     name: self.previous.lexeme.to_string(),
                 },
-            );
-            let previous_locals = std::mem::replace(
-                &mut self.locals,
-                vec![Local {
+                function_type,
+                locals: vec![Local {
                     name: Token {
                         token_type: TokenType::EOF,
                         lexeme: "",
@@ -959,17 +971,17 @@ mod compiler {
                     },
                     depth: 0,
                 }],
-            );
-            let previous_scope_depth = self.scope_depth;
-            self.scope_depth = 0;
+                scope_depth: 0,
+            });
             self.begin_scope();
             self.consume(TokenType::LeftParen, "`(` expected after function name");
             loop {
                 if self.check(TokenType::RightParen) {
                     break;
                 }
-                self.function.arity += 1;
-                if self.function.arity > 255 {
+                let frame = self.frames.last_mut().unwrap();
+                frame.function.arity += 1;
+                if frame.function.arity > 255 {
                     self.error("too many parameters");
                 }
                 let constant = self.parse_variable("parameter name expected");
@@ -983,10 +995,7 @@ mod compiler {
             self.block();
             self.emit_instruction(Instruction::Nil);
             self.emit_instruction(Instruction::Return);
-            let function = std::mem::replace(&mut self.function, previous_function);
-            self.function_type = previous_function_type;
-            self.locals = previous_locals;
-            self.scope_depth = previous_scope_depth;
+            let CompilerFrame { function, .. } = self.frames.pop().unwrap();
             self.emit_constant(Value::Function(Rc::new(function)));
         }
 
@@ -1021,18 +1030,21 @@ mod compiler {
             }
             self.emit_instruction(Instruction::Nil);
             self.emit_instruction(Instruction::Return);
+            let frame = &mut self.frames[0];
             if !self.had_error {
-                println!("{:?}", self.function.chunk);
+                println!("{:?}", frame.function.chunk);
             }
-            Ok(std::mem::take(&mut self.function))
+            Ok(std::mem::take(&mut frame.function))
         }
 
         fn emit_instruction(&mut self, instruction: Instruction) {
-            self.function.chunk.write(instruction, self.previous.line);
+            let frame = self.frames.last_mut().unwrap();
+            frame.function.chunk.write(instruction, self.previous.line);
         }
 
         fn make_constant(&mut self, value: Value) -> u8 {
-            if let Some(constant) = self.function.chunk.add_constant(value) {
+            let frame = self.frames.last_mut().unwrap();
+            if let Some(constant) = frame.function.chunk.add_constant(value) {
                 constant
             } else {
                 self.error("too many constants in one chunk");
@@ -1045,23 +1057,27 @@ mod compiler {
             self.emit_instruction(Instruction::Constant(constant));
         }
 
+        fn chunk_len(&self) -> usize {
+            let frame = self.frames.last().unwrap();
+            frame.function.chunk.code.len()
+        }
+
         fn emit_jump(&mut self) -> usize {
             self.emit_instruction(Instruction::NOP);
-            self.function.chunk.code.len() - 1
+            self.chunk_len() - 1
         }
 
         fn patch_jump(&mut self, jump: usize, instruction: fn(i16) -> Instruction) {
-            let Ok(offset) = (self.function.chunk.code.len() - jump).try_into() else {
+            let Ok(offset) = (self.chunk_len() - jump).try_into() else {
                 self.error("jump offset too large");
                 return;
             };
-            self.function.chunk.code[jump] = instruction(offset);
+            let frame = self.frames.last_mut().unwrap();
+            frame.function.chunk.code[jump] = instruction(offset);
         }
 
         fn emit_loop(&mut self, loop_start: usize, instruction: fn(i16) -> Instruction) {
-            let Ok(offset) =
-                (loop_start as isize - self.function.chunk.code.len() as isize).try_into()
-            else {
+            let Ok(offset) = (loop_start as isize - self.chunk_len() as isize).try_into() else {
                 self.error("loop body too large");
                 return;
             };
