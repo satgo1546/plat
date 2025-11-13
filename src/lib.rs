@@ -378,11 +378,17 @@ impl Display for Value {
     }
 }
 
-#[derive(Debug, Default, Clone)]
+#[derive(Default, Clone)]
 pub struct ObjFunction {
     arity: i32,
     chunk: Chunk,
     name: String,
+}
+
+impl Debug for ObjFunction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "== {}/{} ==\n{:?}", self.name, self.arity, self.chunk)
+    }
 }
 
 #[derive(Default, Clone)]
@@ -429,6 +435,15 @@ impl Debug for Chunk {
                 write!(f, "{:4} ", self.lines[i])?;
             }
             write!(f, "{:?}", instruction)?;
+        }
+        if !self.code.is_empty() {
+            f.write_char('\n')?;
+        }
+        for (i, constant) in self.constants.iter().enumerate() {
+            if i > 0 {
+                f.write_char('\n')?;
+            }
+            write!(f, "c{:03}    = {:?}", i, constant)?;
         }
         Ok(())
     }
@@ -1032,7 +1047,7 @@ mod compiler {
             self.emit_instruction(Instruction::Return);
             let frame = &mut self.frames[0];
             if !self.had_error {
-                println!("{:?}", frame.function.chunk);
+                println!("{:?}", frame.function);
             }
             Ok(std::mem::take(&mut frame.function))
         }
