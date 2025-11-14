@@ -337,6 +337,7 @@ pub enum Instruction {
     LocalUpvalue(u8), // never in isolation
     NonlocalUpvalue(u8), // never in isolation
     CloseUpvalue,
+    Class(u8),
 }
 
 #[derive(Debug, Clone)]
@@ -347,6 +348,7 @@ pub enum Value {
     String(String),
     Closure(Rc<ObjFunction>, Vec<Rc<RefCell<ObjUpvalue>>>),
     Native(fn(Vec<Value>) -> Value),
+    Class(Rc<ObjClass>),
 }
 
 impl Value {
@@ -371,6 +373,7 @@ impl PartialEq for Value {
                     && zip(a_upvalues, b_upvalues).all(|(a, b)| Rc::ptr_eq(a, b))
             }
             (Self::Native(a), Self::Native(b)) => std::ptr::fn_addr_eq(*a, *b),
+            (Self::Class(a), Self::Class(b)) => Rc::ptr_eq(a, b),
             _ => false,
         }
     }
@@ -385,6 +388,7 @@ impl Display for Value {
             Self::String(x) => f.write_str(x),
             Self::Closure(x, _) => write!(f, "<fn {}>", x.name),
             Self::Native(_) => f.write_str("<native fn>"),
+            Self::Class(x) => f.write_str(&x.name),
         }
     }
 }
@@ -407,6 +411,12 @@ impl Debug for ObjFunction {
 pub enum ObjUpvalue {
     Open(usize, usize), // frame index, stack index
     Closed(Value),
+}
+
+#[derive(Debug, Clone)]
+pub struct ObjClass {
+    name: String,
+    methods: HashMap<String, Value>,
 }
 
 #[derive(Default, Clone)]
@@ -453,15 +463,17 @@ impl Debug for Chunk {
                 write!(f, "{:4} ", self.lines[i])?;
             }
             write!(f, "{:?}", instruction)?;
-        }
-        if !self.code.is_empty() {
-            f.write_char('\n')?;
-        }
-        for (i, constant) in self.constants.iter().enumerate() {
-            if i > 0 {
-                f.write_char('\n')?;
+            match instruction {
+                Instruction::Constant(constant)
+                | Instruction::DefineGlobal(constant)
+                | Instruction::GetGlobal(constant)
+                | Instruction::SetGlobal(constant)
+                | Instruction::Closure(constant)
+                | Instruction::Class(constant) => {
+                    write!(f, " = {:?}", self.constants[*constant as usize])?
+                }
+                _ => {}
             }
-            write!(f, "c{:03}    = {:?}", i, constant)?;
         }
         Ok(())
     }
@@ -1099,11 +1111,23 @@ mod compiler {
             self.define_variable(global);
         }
 
+        fn class_declaration(&mut self) {
+            let global = self.parse_variable("class name expected");
+            self.make_initialized();
+            self.emit_constant(Value::String(self.previous.lexeme.to_string()));
+            self.emit_instruction(Instruction::Class(global));
+            self.define_variable(global);
+            self.consume(TokenType::LeftBrace, "`{` expected before class body");
+            self.consume(TokenType::RightBrace, "`}` expected after class body");
+        }
+
         fn declaration(&mut self) {
             if self.matches(TokenType::Var) {
                 self.var_declaration();
             } else if self.matches(TokenType::Fun) {
                 self.fun_declaration();
+            } else if self.matches(TokenType::Class) {
+                self.class_declaration();
             } else {
                 self.statement();
             }
@@ -1495,6 +1519,17 @@ impl VM {
                     let value = frame.stack.pop().unwrap();
                     let upvalue = frame.open_upvalues.get(&frame.stack.len()).unwrap();
                     *upvalue.borrow_mut() = ObjUpvalue::Closed(value);
+                }
+                Instruction::Class(constant) => {
+                    let Value::String(name) =
+                        frame.function.chunk.constants[constant as usize].clone()
+                    else {
+                        panic!()
+                    };
+                    frame.stack.push(Value::Class(Rc::new(ObjClass {
+                        name,
+                        methods: HashMap::new(),
+                    })));
                 }
             }
             // Re-borrow to make the borrow checker happy 😾
