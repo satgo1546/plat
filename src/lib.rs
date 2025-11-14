@@ -338,6 +338,8 @@ pub enum Instruction {
     NonlocalUpvalue(u8), // never in isolation
     CloseUpvalue,
     Class(u8),
+    GetProperty(u8),
+    SetProperty(u8),
 }
 
 #[derive(Debug, Clone)]
@@ -349,7 +351,7 @@ pub enum Value {
     Closure(Rc<ObjFunction>, Vec<Rc<RefCell<ObjUpvalue>>>),
     Native(fn(Vec<Value>) -> Value),
     Class(Rc<ObjClass>),
-    Instance(Rc<ObjInstance>),
+    Instance(Rc<RefCell<ObjInstance>>),
 }
 
 impl Value {
@@ -391,7 +393,7 @@ impl Display for Value {
             Self::Closure(x, _) => write!(f, "<fn {}>", x.name),
             Self::Native(_) => f.write_str("<native fn>"),
             Self::Class(x) => f.write_str(&x.name),
-            Self::Instance(x) => write!(f, "{} instance", x.class.name),
+            Self::Instance(x) => write!(f, "{} instance", x.borrow().class.name),
         }
     }
 }
@@ -478,7 +480,9 @@ impl Debug for Chunk {
                 | Instruction::GetGlobal(constant)
                 | Instruction::SetGlobal(constant)
                 | Instruction::Closure(constant)
-                | Instruction::Class(constant) => {
+                | Instruction::Class(constant)
+                | Instruction::GetProperty(constant)
+                | Instruction::SetProperty(constant) => {
                     write!(f, " = {:?}", self.constants[*constant as usize])?
                 }
                 _ => {}
@@ -807,7 +811,7 @@ mod compiler {
                 | TokenType::GreaterEqual => Precedence::COMPARISON,
                 TokenType::And => Precedence::AND,
                 TokenType::Or => Precedence::OR,
-                TokenType::LeftParen => Precedence::CALL,
+                TokenType::LeftParen | TokenType::Dot => Precedence::CALL,
                 _ => Precedence::NONE,
             }
         }
@@ -911,6 +915,17 @@ mod compiler {
                     TokenType::LeftParen => {
                         let arg_count = self.argument_list();
                         self.emit_instruction(Instruction::Call(arg_count));
+                    }
+                    TokenType::Dot => {
+                        self.consume(TokenType::Identifier, "property name expected");
+                        let name =
+                            self.make_constant(Value::String(self.previous.lexeme.to_string()));
+                        if can_assign && self.matches(TokenType::Equal) {
+                            self.expression();
+                            self.emit_instruction(Instruction::SetProperty(name));
+                        } else {
+                            self.emit_instruction(Instruction::GetProperty(name));
+                        }
                     }
                     _ => unreachable!("unhandled TokenType having precedence other than None"),
                 }
@@ -1486,10 +1501,12 @@ impl VM {
                             frame.stack.push(native(stack));
                         }
                         Value::Class(class) => {
-                            frame.stack.push(Value::Instance(Rc::new(ObjInstance {
-                                class: Rc::clone(class),
-                                fields: HashMap::new(),
-                            })));
+                            frame
+                                .stack
+                                .push(Value::Instance(Rc::new(RefCell::new(ObjInstance {
+                                    class: Rc::clone(class),
+                                    fields: HashMap::new(),
+                                }))));
                         }
                         _ => return self.runtime_error("bad callee"),
                     }
@@ -1545,6 +1562,35 @@ impl VM {
                         name,
                         methods: HashMap::new(),
                     })));
+                }
+                Instruction::GetProperty(constant) => {
+                    let Value::Instance(instance) = frame.stack.pop().unwrap() else {
+                        return self.runtime_error("not an instance");
+                    };
+                    let instance = instance.borrow();
+                    let Value::String(name) = &frame.function.chunk.constants[constant as usize]
+                    else {
+                        panic!()
+                    };
+                    let Some(value) = instance.fields.get(name) else {
+                        return self.runtime_error("undefined property");
+                    };
+                    frame.stack.push(value.clone());
+                }
+                Instruction::SetProperty(constant) => {
+                    let value = frame.stack.pop().unwrap();
+                    let Value::Instance(instance) = frame.stack.pop().unwrap() else {
+                        return self.runtime_error("not an instance");
+                    };
+                    let Value::String(name) = &frame.function.chunk.constants[constant as usize]
+                    else {
+                        panic!()
+                    };
+                    instance
+                        .borrow_mut()
+                        .fields
+                        .insert(name.clone(), value.clone());
+                    frame.stack.push(value);
                 }
             }
             // Re-borrow to make the borrow checker happy 😾
