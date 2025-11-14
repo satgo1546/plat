@@ -1,6 +1,8 @@
 use std::{
+    cell::RefCell,
     collections::HashMap,
     fmt::{Debug, Display, Write},
+    iter::zip,
     rc::Rc,
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -326,9 +328,14 @@ pub enum Instruction {
     SetGlobal(u8),
     GetLocal(u8),
     SetLocal(u8),
+    GetUpvalue(u8),
+    SetUpvalue(u8),
     Jump(i16),
     JumpIfFalse(i16),
     Call(u8),
+    Closure(u8),      // may be followed by LocalUpvalue and NonlocalUpvalue instructions
+    LocalUpvalue(u8), // never in isolation
+    NonlocalUpvalue(u8), // never in isolation
 }
 
 #[derive(Debug, Clone)]
@@ -337,7 +344,7 @@ pub enum Value {
     Boolean(bool),
     Number(f64),
     String(String),
-    Function(Rc<ObjFunction>),
+    Closure(Rc<ObjFunction>, Vec<Rc<ObjUpvalue>>),
     Native(fn(Vec<Value>) -> Value),
 }
 
@@ -358,7 +365,10 @@ impl PartialEq for Value {
             (Self::Boolean(a), Self::Boolean(b)) => a == b,
             (Self::Number(a), Self::Number(b)) => a == b,
             (Self::String(a), Self::String(b)) => a == b,
-            (Self::Function(a), Self::Function(b)) => Rc::ptr_eq(a, b),
+            (Self::Closure(a_function, a_upvalues), Self::Closure(b_function, b_upvalues)) => {
+                Rc::ptr_eq(a_function, b_function)
+                    && zip(a_upvalues, b_upvalues).all(|(a, b)| Rc::ptr_eq(a, b))
+            }
             (Self::Native(a), Self::Native(b)) => std::ptr::fn_addr_eq(*a, *b),
             _ => false,
         }
@@ -372,7 +382,7 @@ impl Display for Value {
             Self::Boolean(x) => write!(f, "{}", x),
             Self::Number(x) => write!(f, "{}", x),
             Self::String(x) => f.write_str(x),
-            Self::Function(x) => write!(f, "<fn {}>", x.name),
+            Self::Closure(x, _) => write!(f, "<fn {}>", x.name),
             Self::Native(_) => f.write_str("<native fn>"),
         }
     }
@@ -381,6 +391,7 @@ impl Display for Value {
 #[derive(Default, Clone)]
 pub struct ObjFunction {
     arity: i32,
+    upvalue_count: i32,
     chunk: Chunk,
     name: String,
 }
@@ -389,6 +400,12 @@ impl Debug for ObjFunction {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "== {}/{} ==\n{:?}", self.name, self.arity, self.chunk)
     }
+}
+
+#[derive(Debug)]
+pub enum ObjUpvalue {
+    Open(usize, usize), // frame index, stack index
+    Closed(RefCell<Value>),
 }
 
 #[derive(Default, Clone)]
@@ -486,6 +503,12 @@ mod compiler {
         Script,
     }
 
+    #[derive(Debug, Clone, Copy)]
+    struct Upvalue {
+        index: u8,
+        is_local: bool,
+    }
+
     pub struct Compiler<'a> {
         scanner: Scanner<'a>,
         current: Token<'a>,
@@ -499,6 +522,7 @@ mod compiler {
         function: ObjFunction,
         function_type: FunctionType,
         locals: Vec<Local<'a>>,
+        upvalues: Vec<Upvalue>,
         scope_depth: i32,
     }
 
@@ -521,11 +545,13 @@ mod compiler {
                 frames: vec![CompilerFrame {
                     function: ObjFunction {
                         arity: 0,
+                        upvalue_count: 0,
                         chunk: Chunk::new(),
                         name: String::new(),
                     },
                     function_type: FunctionType::Script,
                     locals: Vec::new(),
+                    upvalues: Vec::new(),
                     scope_depth: 0,
                 }],
             }
@@ -642,8 +668,8 @@ mod compiler {
             frame.locals.last_mut().unwrap().depth = frame.scope_depth;
         }
 
-        fn resolve_local(&mut self, name: Token) -> Option<u8> {
-            let frame = self.frames.last().unwrap();
+        fn resolve_local(&mut self, frame_index: usize, name: Token) -> Option<u8> {
+            let frame = &mut self.frames[frame_index];
             if let Some((i, local)) = frame
                 .locals
                 .iter()
@@ -660,10 +686,36 @@ mod compiler {
             }
         }
 
+        fn add_upvalue(&mut self, frame_index: usize, index: u8, is_local: bool) -> u8 {
+            if self.frames[frame_index].upvalues.len() > u8::MAX as usize {
+                self.error("too many upvalues");
+            }
+            self.frames[frame_index].function.upvalue_count += 1;
+            self.frames[frame_index]
+                .upvalues
+                .push(Upvalue { index, is_local });
+            (self.frames[frame_index].upvalues.len() - 1) as u8
+        }
+
+        fn resolve_upvalue(&mut self, frame_index: usize, name: Token) -> Option<u8> {
+            if frame_index == 0 {
+                return None;
+            }
+            if let Some(local) = self.resolve_local(frame_index - 1, name) {
+                return Some(self.add_upvalue(frame_index, local, true));
+            }
+            if let Some(upvalue) = self.resolve_upvalue(frame_index - 1, name) {
+                return Some(self.add_upvalue(frame_index, upvalue, false));
+            }
+            None
+        }
+
         fn named_variable(&mut self, name: Token, can_assign: bool) {
             let (get_op, set_op, arg): (fn(u8) -> Instruction, fn(u8) -> Instruction, u8) =
-                if let Some(i) = self.resolve_local(name) {
+                if let Some(i) = self.resolve_local(self.frames.len() - 1, name) {
                     (Instruction::GetLocal, Instruction::SetLocal, i)
+                } else if let Some(arg) = self.resolve_upvalue(self.frames.len() - 1, name) {
+                    (Instruction::GetUpvalue, Instruction::SetUpvalue, arg)
                 } else {
                     let arg = self.make_constant(Value::String(name.lexeme.to_string()));
                     (Instruction::GetGlobal, Instruction::SetGlobal, arg)
@@ -974,6 +1026,7 @@ mod compiler {
             self.frames.push(CompilerFrame {
                 function: ObjFunction {
                     arity: 0,
+                    upvalue_count: 0,
                     chunk: Chunk::new(),
                     name: self.previous.lexeme.to_string(),
                 },
@@ -986,6 +1039,7 @@ mod compiler {
                     },
                     depth: 0,
                 }],
+                upvalues: Vec::new(),
                 scope_depth: 0,
             });
             self.begin_scope();
@@ -1010,8 +1064,18 @@ mod compiler {
             self.block();
             self.emit_instruction(Instruction::Nil);
             self.emit_instruction(Instruction::Return);
-            let CompilerFrame { function, .. } = self.frames.pop().unwrap();
-            self.emit_constant(Value::Function(Rc::new(function)));
+            let CompilerFrame {
+                function, upvalues, ..
+            } = self.frames.pop().unwrap();
+            let constant = self.make_constant(Value::Closure(Rc::new(function), Vec::new()));
+            self.emit_instruction(Instruction::Closure(constant));
+            for upvalue in upvalues {
+                if upvalue.is_local {
+                    self.emit_instruction(Instruction::LocalUpvalue(upvalue.index));
+                } else {
+                    self.emit_instruction(Instruction::NonlocalUpvalue(upvalue.index));
+                }
+            }
         }
 
         fn fun_declaration(&mut self) {
@@ -1103,6 +1167,7 @@ mod compiler {
 
 pub struct CallFrame {
     function: Rc<ObjFunction>,
+    upvalues: Vec<Rc<ObjUpvalue>>, // = frame->closure->upvalues
     ip: usize,
     stack: Vec<Value>,
 }
@@ -1177,6 +1242,7 @@ impl VM {
         self.frames.clear();
         self.frames.push(CallFrame {
             function,
+            upvalues: Vec::new(),
             ip: 0,
             stack: Vec::new(),
         });
@@ -1292,6 +1358,30 @@ impl VM {
                 Instruction::SetLocal(slot) => {
                     frame.stack[slot as usize] = frame.stack.last().unwrap().clone();
                 }
+                Instruction::GetUpvalue(slot) => {
+                    let value = match self.frames.last().unwrap().upvalues[slot as usize].as_ref() {
+                        ObjUpvalue::Open(frame_index, index) => {
+                            self.frames[*frame_index].stack[*index].clone()
+                        }
+                        ObjUpvalue::Closed(value) => value.borrow().clone(),
+                    };
+                    self.frames.last_mut().unwrap().stack.push(value);
+                }
+                Instruction::SetUpvalue(slot) => {
+                    let value = frame.stack.last().unwrap().clone();
+                    match match self.frames.last().unwrap().upvalues[slot as usize].as_ref() {
+                        ObjUpvalue::Open(frame_index, index) => Some((*frame_index, *index)),
+                        ObjUpvalue::Closed(cell) => {
+                            *cell.borrow_mut() = value.clone();
+                            None
+                        }
+                    } {
+                        Some((frame_index, index)) => {
+                            self.frames[frame_index].stack[index] = value;
+                        }
+                        None => {}
+                    }
+                }
                 Instruction::Jump(offset) => {
                     frame.ip = frame.ip.wrapping_add_signed(offset as isize);
                     continue;
@@ -1307,7 +1397,7 @@ impl VM {
                         .stack
                         .split_off(frame.stack.len() - arg_count as usize - 1);
                     match &stack[0] {
-                        Value::Function(function) => {
+                        Value::Closure(function, upvalues) => {
                             let function = Rc::clone(function);
 
                             if arg_count as i32 != function.arity {
@@ -1318,6 +1408,7 @@ impl VM {
                             }
                             self.frames.push(CallFrame {
                                 function,
+                                upvalues: upvalues.clone(),
                                 ip: 0,
                                 stack,
                             });
@@ -1331,6 +1422,33 @@ impl VM {
                         }
                         _ => return self.runtime_error("bad callee"),
                     }
+                }
+                Instruction::Closure(constant) => {
+                    let current_frame_index = self.frames.len() - 1;
+                    let frame = &mut self.frames[current_frame_index];
+                    let Value::Closure(function, _) =
+                        frame.function.chunk.constants[constant as usize].clone()
+                    else {
+                        panic!()
+                    };
+                    let upvalues = (0..function.upvalue_count)
+                        .map(|_| {
+                            frame.ip += 1;
+                            match frame.function.chunk.code[frame.ip] {
+                                Instruction::LocalUpvalue(index) => {
+                                    Rc::new(ObjUpvalue::Open(current_frame_index, index as usize))
+                                }
+                                Instruction::NonlocalUpvalue(index) => {
+                                    Rc::clone(&frame.upvalues[index as usize])
+                                }
+                                _ => panic!("not enough upvalue instructions"),
+                            }
+                        })
+                        .collect();
+                    frame.stack.push(Value::Closure(function, upvalues));
+                }
+                Instruction::LocalUpvalue(_) | Instruction::NonlocalUpvalue(_) => {
+                    unreachable!("upvalue instructions should not be executed themselves")
                 }
             }
             // Re-borrow to make the borrow checker happy 😾
