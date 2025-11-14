@@ -349,6 +349,7 @@ pub enum Value {
     Closure(Rc<ObjFunction>, Vec<Rc<RefCell<ObjUpvalue>>>),
     Native(fn(Vec<Value>) -> Value),
     Class(Rc<ObjClass>),
+    Instance(Rc<ObjInstance>),
 }
 
 impl Value {
@@ -374,6 +375,7 @@ impl PartialEq for Value {
             }
             (Self::Native(a), Self::Native(b)) => std::ptr::fn_addr_eq(*a, *b),
             (Self::Class(a), Self::Class(b)) => Rc::ptr_eq(a, b),
+            (Self::Instance(a), Self::Instance(b)) => Rc::ptr_eq(a, b),
             _ => false,
         }
     }
@@ -389,6 +391,7 @@ impl Display for Value {
             Self::Closure(x, _) => write!(f, "<fn {}>", x.name),
             Self::Native(_) => f.write_str("<native fn>"),
             Self::Class(x) => f.write_str(&x.name),
+            Self::Instance(x) => write!(f, "{} instance", x.class.name),
         }
     }
 }
@@ -417,6 +420,12 @@ pub enum ObjUpvalue {
 pub struct ObjClass {
     name: String,
     methods: HashMap<String, Value>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ObjInstance {
+    class: Rc<ObjClass>,
+    fields: HashMap<String, Value>,
 }
 
 #[derive(Default, Clone)]
@@ -1475,6 +1484,12 @@ impl VM {
                                 panic!()
                             };
                             frame.stack.push(native(stack));
+                        }
+                        Value::Class(class) => {
+                            frame.stack.push(Value::Instance(Rc::new(ObjInstance {
+                                class: Rc::clone(class),
+                                fields: HashMap::new(),
+                            })));
                         }
                         _ => return self.runtime_error("bad callee"),
                     }
