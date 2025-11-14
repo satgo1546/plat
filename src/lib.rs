@@ -336,6 +336,7 @@ pub enum Instruction {
     Closure(u8),      // may be followed by LocalUpvalue and NonlocalUpvalue instructions
     LocalUpvalue(u8), // never in isolation
     NonlocalUpvalue(u8), // never in isolation
+    CloseUpvalue,
 }
 
 #[derive(Debug, Clone)]
@@ -344,7 +345,7 @@ pub enum Value {
     Boolean(bool),
     Number(f64),
     String(String),
-    Closure(Rc<ObjFunction>, Vec<Rc<ObjUpvalue>>),
+    Closure(Rc<ObjFunction>, Vec<Rc<RefCell<ObjUpvalue>>>),
     Native(fn(Vec<Value>) -> Value),
 }
 
@@ -402,10 +403,10 @@ impl Debug for ObjFunction {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum ObjUpvalue {
     Open(usize, usize), // frame index, stack index
-    Closed(RefCell<Value>),
+    Closed(Value),
 }
 
 #[derive(Default, Clone)]
@@ -495,6 +496,7 @@ mod compiler {
     struct Local<'a> {
         name: Token<'a>,
         depth: i32,
+        is_captured: bool,
     }
 
     #[derive(Debug, Clone, Copy)]
@@ -649,7 +651,11 @@ mod compiler {
                 self.error("too many local variables");
                 return;
             }
-            frame.locals.push(Local { name, depth: -1 });
+            frame.locals.push(Local {
+                name,
+                depth: -1,
+                is_captured: false,
+            });
         }
 
         fn define_variable(&mut self, global: u8) {
@@ -702,6 +708,7 @@ mod compiler {
                 return None;
             }
             if let Some(local) = self.resolve_local(frame_index - 1, name) {
+                self.frames[frame_index - 1].locals[local as usize].is_captured = true;
                 return Some(self.add_upvalue(frame_index, local, true));
             }
             if let Some(upvalue) = self.resolve_upvalue(frame_index - 1, name) {
@@ -904,12 +911,18 @@ mod compiler {
         fn end_scope(&mut self) {
             let frame = self.frames.last_mut().unwrap();
             frame.scope_depth -= 1;
-            let mut n = 0usize;
-            while let Some(_) = frame.locals.pop_if(|x| x.depth > frame.scope_depth) {
-                n += 1;
-            }
-            for _ in 0..n {
-                self.emit_instruction(Instruction::Pop);
+            while let Some(Local { is_captured, .. }) =
+                frame.locals.pop_if(|x| x.depth > frame.scope_depth)
+            {
+                // Inline self.emit_instruction() to make the borrow checker happy 😾
+                frame.function.chunk.write(
+                    if is_captured {
+                        Instruction::CloseUpvalue
+                    } else {
+                        Instruction::Pop
+                    },
+                    self.previous.line,
+                );
             }
         }
 
@@ -1038,6 +1051,7 @@ mod compiler {
                         line: 0,
                     },
                     depth: 0,
+                    is_captured: false,
                 }],
                 upvalues: Vec::new(),
                 scope_depth: 0,
@@ -1167,7 +1181,8 @@ mod compiler {
 
 pub struct CallFrame {
     function: Rc<ObjFunction>,
-    upvalues: Vec<Rc<ObjUpvalue>>, // = frame->closure->upvalues
+    upvalues: Vec<Rc<RefCell<ObjUpvalue>>>, // = frame->closure->upvalues
+    open_upvalues: HashMap<usize, Rc<RefCell<ObjUpvalue>>>,
     ip: usize,
     stack: Vec<Value>,
 }
@@ -1243,6 +1258,7 @@ impl VM {
         self.frames.push(CallFrame {
             function,
             upvalues: Vec::new(),
+            open_upvalues: HashMap::new(),
             ip: 0,
             stack: Vec::new(),
         });
@@ -1318,6 +1334,14 @@ impl VM {
                 }
                 Instruction::Return => {
                     let result = frame.stack.pop().unwrap();
+                    for upvalue in frame.open_upvalues.values() {
+                        upvalue.replace_with(|upvalue| match upvalue {
+                            ObjUpvalue::Open(_, index) => {
+                                ObjUpvalue::Closed(frame.stack[*index].clone())
+                            }
+                            ObjUpvalue::Closed(value) => ObjUpvalue::Closed(value.clone()),
+                        });
+                    }
                     self.frames.pop();
                     match self.frames.last_mut() {
                         Some(frame) => frame.stack.push(result),
@@ -1359,26 +1383,33 @@ impl VM {
                     frame.stack[slot as usize] = frame.stack.last().unwrap().clone();
                 }
                 Instruction::GetUpvalue(slot) => {
-                    let value = match self.frames.last().unwrap().upvalues[slot as usize].as_ref() {
+                    let value = match (*self.frames.last().unwrap().upvalues[slot as usize]
+                        .as_ref()
+                        .borrow())
+                    .clone()
+                    {
                         ObjUpvalue::Open(frame_index, index) => {
-                            self.frames[*frame_index].stack[*index].clone()
+                            self.frames[frame_index].stack[index].clone()
                         }
-                        ObjUpvalue::Closed(value) => value.borrow().clone(),
+                        ObjUpvalue::Closed(value) => value.clone(),
                     };
                     self.frames.last_mut().unwrap().stack.push(value);
                 }
                 Instruction::SetUpvalue(slot) => {
                     let value = frame.stack.last().unwrap().clone();
-                    match match self.frames.last().unwrap().upvalues[slot as usize].as_ref() {
-                        ObjUpvalue::Open(frame_index, index) => Some((*frame_index, *index)),
-                        ObjUpvalue::Closed(cell) => {
-                            *cell.borrow_mut() = value.clone();
-                            None
+                    match {
+                        let mut upvalue = self.frames.last().unwrap().upvalues[slot as usize]
+                            .as_ref()
+                            .borrow_mut();
+                        match *upvalue {
+                            ObjUpvalue::Open(frame_index, index) => Some((frame_index, index)),
+                            ObjUpvalue::Closed(_) => {
+                                *upvalue = ObjUpvalue::Closed(value.clone());
+                                None
+                            }
                         }
                     } {
-                        Some((frame_index, index)) => {
-                            self.frames[frame_index].stack[index] = value;
-                        }
+                        Some((frame_index, index)) => self.frames[frame_index].stack[index] = value,
                         None => {}
                     }
                 }
@@ -1409,6 +1440,7 @@ impl VM {
                             self.frames.push(CallFrame {
                                 function,
                                 upvalues: upvalues.clone(),
+                                open_upvalues: HashMap::new(),
                                 ip: 0,
                                 stack,
                             });
@@ -1435,9 +1467,16 @@ impl VM {
                         .map(|_| {
                             frame.ip += 1;
                             match frame.function.chunk.code[frame.ip] {
-                                Instruction::LocalUpvalue(index) => {
-                                    Rc::new(ObjUpvalue::Open(current_frame_index, index as usize))
-                                }
+                                Instruction::LocalUpvalue(index) => Rc::clone(
+                                    frame.open_upvalues.entry(index as usize).or_insert_with(
+                                        || {
+                                            Rc::new(RefCell::new(ObjUpvalue::Open(
+                                                current_frame_index,
+                                                index as usize,
+                                            )))
+                                        },
+                                    ),
+                                ),
                                 Instruction::NonlocalUpvalue(index) => {
                                     Rc::clone(&frame.upvalues[index as usize])
                                 }
@@ -1449,6 +1488,13 @@ impl VM {
                 }
                 Instruction::LocalUpvalue(_) | Instruction::NonlocalUpvalue(_) => {
                     unreachable!("upvalue instructions should not be executed themselves")
+                }
+                Instruction::CloseUpvalue => {
+                    let current_frame_index = self.frames.len() - 1;
+                    let frame = &mut self.frames[current_frame_index];
+                    let value = frame.stack.pop().unwrap();
+                    let upvalue = frame.open_upvalues.get(&frame.stack.len()).unwrap();
+                    *upvalue.borrow_mut() = ObjUpvalue::Closed(value);
                 }
             }
             // Re-borrow to make the borrow checker happy 😾
