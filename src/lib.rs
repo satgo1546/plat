@@ -544,6 +544,7 @@ mod compiler {
     enum FunctionType {
         Function,
         Method,
+        Initializer,
         Script,
     }
 
@@ -1071,10 +1072,17 @@ mod compiler {
                 if self.matches(TokenType::Semicolon) {
                     self.emit_instruction(Instruction::Nil);
                 } else {
+                    if let FunctionType::Initializer = self.frames.last().unwrap().function_type {
+                        self.error("invalid return value for initializer");
+                    }
                     self.expression();
                     self.consume(TokenType::Semicolon, "`;` expected after return value");
                 }
-                self.emit_instruction(Instruction::Return);
+                if let FunctionType::Initializer = self.frames.last().unwrap().function_type {
+                    self.emit_instruction(Instruction::GetLocal(0));
+                } else {
+                    self.emit_instruction(Instruction::Return);
+                }
             } else {
                 self.expression();
                 self.consume(TokenType::Semicolon, "`;` expected after expression");
@@ -1109,9 +1117,8 @@ mod compiler {
                     name: Token {
                         token_type: TokenType::EOF,
                         lexeme: match function_type {
-                            FunctionType::Function => "",
-                            FunctionType::Method => "this",
-                            FunctionType::Script => "",
+                            FunctionType::Function | FunctionType::Script => "",
+                            FunctionType::Method | FunctionType::Initializer => "this",
                         },
                         line: 0,
                     },
@@ -1141,7 +1148,11 @@ mod compiler {
             self.consume(TokenType::RightParen, "`)` expected after parameters");
             self.consume(TokenType::LeftBrace, "`{` expected before function body");
             self.block();
-            self.emit_instruction(Instruction::Nil);
+            if let FunctionType::Initializer = function_type {
+                self.emit_instruction(Instruction::GetLocal(0));
+            } else {
+                self.emit_instruction(Instruction::Nil);
+            }
             self.emit_instruction(Instruction::Return);
             let CompilerFrame {
                 function, upvalues, ..
@@ -1177,7 +1188,11 @@ mod compiler {
             while !self.check(TokenType::RightBrace) && !self.check(TokenType::EOF) {
                 self.consume(TokenType::Identifier, "method name expected");
                 let constant = self.make_constant(Value::String(self.previous.lexeme.to_string()));
-                self.function(FunctionType::Method);
+                self.function(if self.previous.lexeme == "init" {
+                    FunctionType::Initializer
+                } else {
+                    FunctionType::Method
+                });
                 self.emit_instruction(Instruction::Method(constant));
             }
             self.consume(TokenType::RightBrace, "`}` expected after class body");
@@ -1339,6 +1354,27 @@ impl VM {
             }
             _ => self.runtime_error("operands must be numbers"),
         }
+    }
+
+    fn call(&mut self, closure_value: Value, stack: Vec<Value>) -> InterpretResult {
+        let Value::Closure(function, upvalues) = closure_value else {
+            panic!()
+        };
+        if stack.len() - 1 != function.arity as usize {
+            return self.runtime_error(&format!(
+                "expected {} arguments but got {}",
+                function.arity,
+                stack.len() - 1
+            ));
+        }
+        self.frames.push(CallFrame {
+            function,
+            upvalues,
+            open_upvalues: HashMap::new(),
+            ip: 0,
+            stack,
+        });
+        Ok(())
     }
 
     fn run(&mut self, function: Rc<ObjFunction>) -> InterpretResult {
@@ -1516,22 +1552,8 @@ impl VM {
                         .stack
                         .split_off(frame.stack.len() - arg_count as usize - 1);
                     match &stack[0] {
-                        Value::Closure(function, upvalues) => {
-                            let function = Rc::clone(function);
-
-                            if arg_count as i32 != function.arity {
-                                return self.runtime_error(&format!(
-                                    "expected {} arguments but got {}",
-                                    function.arity, arg_count
-                                ));
-                            }
-                            self.frames.push(CallFrame {
-                                function,
-                                upvalues: upvalues.clone(),
-                                open_upvalues: HashMap::new(),
-                                ip: 0,
-                                stack,
-                            });
+                        closure_value @ Value::Closure(_, _) => {
+                            self.call(closure_value.clone(), stack)?;
                             continue;
                         }
                         Value::Native(_) => {
@@ -1541,37 +1563,31 @@ impl VM {
                             frame.stack.push(native(stack));
                         }
                         Value::Class(class) => {
-                            frame
-                                .stack
-                                .push(Value::Instance(Rc::new(RefCell::new(ObjInstance {
-                                    class: Rc::clone(class),
-                                    fields: HashMap::new(),
-                                }))));
+                            let class = Rc::clone(class);
+                            let instance = Value::Instance(Rc::new(RefCell::new(ObjInstance {
+                                class: Rc::clone(&class),
+                                fields: HashMap::new(),
+                            })));
+                            stack[0] = instance.clone();
+                            frame.stack.push(instance);
+                            if let Some(initializer) = class.borrow().methods.get("init") {
+                                self.call(initializer.clone(), stack)?;
+                                continue;
+                            } else if arg_count != 0 {
+                                return self
+                                    .runtime_error("too many arguments for default constructor");
+                            }
                         }
                         Value::BoundMethod(bound_method) => {
                             let class = bound_method.class.borrow();
-                            let Value::Closure(function, upvalues) =
-                                class.methods.get(&bound_method.method_name).unwrap()
-                            else {
-                                panic!()
-                            };
-                            let function = Rc::clone(function);
-                            if arg_count as i32 != function.arity {
-                                return self.runtime_error(&format!(
-                                    "expected {} arguments but got {}",
-                                    function.arity, arg_count
-                                ));
-                            }
-                            let upvalues = upvalues.clone();
+                            let closure_value = class
+                                .methods
+                                .get(&bound_method.method_name)
+                                .unwrap()
+                                .clone();
                             drop(class);
                             stack[0] = Value::Instance(Rc::clone(&bound_method.receiver));
-                            self.frames.push(CallFrame {
-                                function,
-                                upvalues,
-                                open_upvalues: HashMap::new(),
-                                ip: 0,
-                                stack,
-                            });
+                            self.call(closure_value, stack)?;
                             continue;
                         }
                         _ => return self.runtime_error("bad callee"),
