@@ -340,6 +340,7 @@ pub enum Instruction {
     Class(u8),
     GetProperty(u8),
     SetProperty(u8),
+    Method(u8),
 }
 
 #[derive(Debug, Clone)]
@@ -350,7 +351,7 @@ pub enum Value {
     String(String),
     Closure(Rc<ObjFunction>, Vec<Rc<RefCell<ObjUpvalue>>>),
     Native(fn(Vec<Value>) -> Value),
-    Class(Rc<ObjClass>),
+    Class(Rc<RefCell<ObjClass>>),
     Instance(Rc<RefCell<ObjInstance>>),
 }
 
@@ -392,8 +393,8 @@ impl Display for Value {
             Self::String(x) => f.write_str(x),
             Self::Closure(x, _) => write!(f, "<fn {}>", x.name),
             Self::Native(_) => f.write_str("<native fn>"),
-            Self::Class(x) => f.write_str(&x.name),
-            Self::Instance(x) => write!(f, "{} instance", x.borrow().class.name),
+            Self::Class(x) => f.write_str(&x.borrow().name),
+            Self::Instance(x) => write!(f, "{} instance", x.borrow().class.borrow().name),
         }
     }
 }
@@ -426,7 +427,7 @@ pub struct ObjClass {
 
 #[derive(Debug, Clone)]
 pub struct ObjInstance {
-    class: Rc<ObjClass>,
+    class: Rc<RefCell<ObjClass>>,
     fields: HashMap<String, Value>,
 }
 
@@ -482,7 +483,8 @@ impl Debug for Chunk {
                 | Instruction::Closure(constant)
                 | Instruction::Class(constant)
                 | Instruction::GetProperty(constant)
-                | Instruction::SetProperty(constant) => {
+                | Instruction::SetProperty(constant)
+                | Instruction::Method(constant) => {
                     write!(f, " = {:?}", self.constants[*constant as usize])?
                 }
                 _ => {}
@@ -1138,11 +1140,20 @@ mod compiler {
         fn class_declaration(&mut self) {
             let global = self.parse_variable("class name expected");
             self.make_initialized();
-            self.emit_constant(Value::String(self.previous.lexeme.to_string()));
+            let class_name = self.previous;
+            self.emit_constant(Value::String(class_name.lexeme.to_string()));
             self.emit_instruction(Instruction::Class(global));
             self.define_variable(global);
+            self.named_variable(class_name, false);
             self.consume(TokenType::LeftBrace, "`{` expected before class body");
+            while !self.check(TokenType::RightBrace) && !self.check(TokenType::EOF) {
+                self.consume(TokenType::Identifier, "method name expected");
+                let constant = self.make_constant(Value::String(self.previous.lexeme.to_string()));
+                self.function(FunctionType::Function);
+                self.emit_instruction(Instruction::Method(constant));
+            }
             self.consume(TokenType::RightBrace, "`}` expected after class body");
+            self.emit_instruction(Instruction::Pop);
         }
 
         fn declaration(&mut self) {
@@ -1558,10 +1569,12 @@ impl VM {
                     else {
                         panic!()
                     };
-                    frame.stack.push(Value::Class(Rc::new(ObjClass {
-                        name,
-                        methods: HashMap::new(),
-                    })));
+                    frame
+                        .stack
+                        .push(Value::Class(Rc::new(RefCell::new(ObjClass {
+                            name,
+                            methods: HashMap::new(),
+                        }))));
                 }
                 Instruction::GetProperty(constant) => {
                     let Value::Instance(instance) = frame.stack.pop().unwrap() else {
@@ -1591,6 +1604,18 @@ impl VM {
                         .fields
                         .insert(name.clone(), value.clone());
                     frame.stack.push(value);
+                }
+                Instruction::Method(constant) => {
+                    let Value::String(name) =
+                        frame.function.chunk.constants[constant as usize].clone()
+                    else {
+                        panic!()
+                    };
+                    let method = frame.stack.pop().unwrap();
+                    let Some(Value::Class(class)) = frame.stack.last() else {
+                        panic!()
+                    };
+                    class.borrow_mut().methods.insert(name, method);
                 }
             }
             // Re-borrow to make the borrow checker happy 😾
