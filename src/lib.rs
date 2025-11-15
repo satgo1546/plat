@@ -353,6 +353,7 @@ pub enum Value {
     Native(fn(Vec<Value>) -> Value),
     Class(Rc<RefCell<ObjClass>>),
     Instance(Rc<RefCell<ObjInstance>>),
+    BoundMethod(Rc<ObjBoundMethod>),
 }
 
 impl Value {
@@ -379,6 +380,11 @@ impl PartialEq for Value {
             (Self::Native(a), Self::Native(b)) => std::ptr::fn_addr_eq(*a, *b),
             (Self::Class(a), Self::Class(b)) => Rc::ptr_eq(a, b),
             (Self::Instance(a), Self::Instance(b)) => Rc::ptr_eq(a, b),
+            (Self::BoundMethod(a), Self::BoundMethod(b)) => {
+                Rc::ptr_eq(&a.receiver, &b.receiver)
+                    && Rc::ptr_eq(&a.class, &b.class)
+                    && a.method_name == b.method_name
+            }
             _ => false,
         }
     }
@@ -395,6 +401,7 @@ impl Display for Value {
             Self::Native(_) => f.write_str("<native fn>"),
             Self::Class(x) => f.write_str(&x.borrow().name),
             Self::Instance(x) => write!(f, "{} instance", x.borrow().class.borrow().name),
+            Self::BoundMethod(x) => write!(f, "<bound fn {}>", x.method_name),
         }
     }
 }
@@ -429,6 +436,13 @@ pub struct ObjClass {
 pub struct ObjInstance {
     class: Rc<RefCell<ObjClass>>,
     fields: HashMap<String, Value>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ObjBoundMethod {
+    receiver: Rc<RefCell<ObjInstance>>,
+    class: Rc<RefCell<ObjClass>>,
+    method_name: String,
 }
 
 #[derive(Default, Clone)]
@@ -1519,6 +1533,31 @@ impl VM {
                                     fields: HashMap::new(),
                                 }))));
                         }
+                        Value::BoundMethod(bound_method) => {
+                            let class = bound_method.class.borrow();
+                            let Value::Closure(function, upvalues) =
+                                class.methods.get(&bound_method.method_name).unwrap()
+                            else {
+                                panic!()
+                            };
+                            let function = Rc::clone(function);
+                            if arg_count as i32 != function.arity {
+                                return self.runtime_error(&format!(
+                                    "expected {} arguments but got {}",
+                                    function.arity, arg_count
+                                ));
+                            }
+                            let upvalues = upvalues.clone();
+                            drop(class);
+                            self.frames.push(CallFrame {
+                                function,
+                                upvalues,
+                                open_upvalues: HashMap::new(),
+                                ip: 0,
+                                stack,
+                            });
+                            continue;
+                        }
                         _ => return self.runtime_error("bad callee"),
                     }
                 }
@@ -1580,15 +1619,22 @@ impl VM {
                     let Value::Instance(instance) = frame.stack.pop().unwrap() else {
                         return self.runtime_error("not an instance");
                     };
-                    let instance = instance.borrow();
+                    let instance_borrowed = instance.borrow();
                     let Value::String(name) = &frame.function.chunk.constants[constant as usize]
                     else {
                         panic!()
                     };
-                    let Some(value) = instance.fields.get(name) else {
+                    if let Some(value) = instance_borrowed.fields.get(name) {
+                        frame.stack.push(value.clone());
+                    } else if instance_borrowed.class.borrow().methods.contains_key(name) {
+                        frame.stack.push(Value::BoundMethod(Rc::new(ObjBoundMethod {
+                            receiver: Rc::clone(&instance),
+                            class: Rc::clone(&instance_borrowed.class),
+                            method_name: name.clone(),
+                        })));
+                    } else {
                         return self.runtime_error("undefined property");
-                    };
-                    frame.stack.push(value.clone());
+                    }
                 }
                 Instruction::SetProperty(constant) => {
                     let value = frame.stack.pop().unwrap();
