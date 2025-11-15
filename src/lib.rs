@@ -543,6 +543,7 @@ mod compiler {
     #[derive(Debug, Clone, Copy)]
     enum FunctionType {
         Function,
+        Method,
         Script,
     }
 
@@ -559,6 +560,7 @@ mod compiler {
         had_error: bool,
         panic_mode: bool,
         frames: Vec<CompilerFrame<'a>>,
+        enclosing_classes: Vec<bool>, // struct ClassCompiler.hasSuperclass
     }
 
     pub struct CompilerFrame<'a> {
@@ -597,6 +599,7 @@ mod compiler {
                     upvalues: Vec::new(),
                     scope_depth: 0,
                 }],
+                enclosing_classes: Vec::new(),
             }
         }
 
@@ -869,6 +872,12 @@ mod compiler {
                 TokenType::Identifier => {
                     self.named_variable(self.previous, can_assign);
                 }
+                TokenType::This => {
+                    if self.enclosing_classes.is_empty() {
+                        self.error("stray `this`");
+                    }
+                    self.named_variable(self.previous, can_assign);
+                }
                 _ => {
                     self.error("expression expected");
                 }
@@ -1099,7 +1108,11 @@ mod compiler {
                 locals: vec![Local {
                     name: Token {
                         token_type: TokenType::EOF,
-                        lexeme: "",
+                        lexeme: match function_type {
+                            FunctionType::Function => "",
+                            FunctionType::Method => "this",
+                            FunctionType::Script => "",
+                        },
                         line: 0,
                     },
                     depth: 0,
@@ -1158,16 +1171,18 @@ mod compiler {
             self.emit_constant(Value::String(class_name.lexeme.to_string()));
             self.emit_instruction(Instruction::Class(global));
             self.define_variable(global);
+            self.enclosing_classes.push(false);
             self.named_variable(class_name, false);
             self.consume(TokenType::LeftBrace, "`{` expected before class body");
             while !self.check(TokenType::RightBrace) && !self.check(TokenType::EOF) {
                 self.consume(TokenType::Identifier, "method name expected");
                 let constant = self.make_constant(Value::String(self.previous.lexeme.to_string()));
-                self.function(FunctionType::Function);
+                self.function(FunctionType::Method);
                 self.emit_instruction(Instruction::Method(constant));
             }
             self.consume(TokenType::RightBrace, "`}` expected after class body");
             self.emit_instruction(Instruction::Pop);
+            self.enclosing_classes.pop().unwrap();
         }
 
         fn declaration(&mut self) {
@@ -1549,6 +1564,7 @@ impl VM {
                             }
                             let upvalues = upvalues.clone();
                             drop(class);
+                            stack[0] = Value::Instance(Rc::clone(&bound_method.receiver));
                             self.frames.push(CallFrame {
                                 function,
                                 upvalues,
