@@ -1180,8 +1180,9 @@ mod compiler {
             let global = self.parse_variable("class name expected");
             self.make_initialized();
             let class_name = self.previous;
-            self.emit_constant(Value::String(class_name.lexeme.to_string()));
-            self.emit_instruction(Instruction::Class(global));
+            let class_name_constant =
+                self.make_constant(Value::String(class_name.lexeme.to_string()));
+            self.emit_instruction(Instruction::Class(class_name_constant));
             self.define_variable(global);
             self.enclosing_classes.push(false);
             if self.matches(TokenType::Less) {
