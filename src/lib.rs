@@ -341,6 +341,7 @@ pub enum Instruction {
     GetProperty(u8),
     SetProperty(u8),
     Method(u8),
+    Inherit,
 }
 
 #[derive(Debug, Clone)]
@@ -1183,6 +1184,15 @@ mod compiler {
             self.emit_instruction(Instruction::Class(global));
             self.define_variable(global);
             self.enclosing_classes.push(false);
+            if self.matches(TokenType::Less) {
+                self.consume(TokenType::Identifier, "superclass name expected");
+                self.named_variable(self.previous, false);
+                if self.previous.lexeme == class_name.lexeme {
+                    self.error("self inheritance");
+                }
+                self.named_variable(class_name, false);
+                self.emit_instruction(Instruction::Inherit);
+            }
             self.named_variable(class_name, false);
             self.consume(TokenType::LeftBrace, "`{` expected before class body");
             while !self.check(TokenType::RightBrace) && !self.check(TokenType::EOF) {
@@ -1694,6 +1704,18 @@ impl VM {
                         panic!()
                     };
                     class.borrow_mut().methods.insert(name, method);
+                }
+                Instruction::Inherit => {
+                    let Some(Value::Class(subclass)) = frame.stack.pop() else {
+                        panic!()
+                    };
+                    let Some(Value::Class(superclass)) = frame.stack.last().cloned() else {
+                        return self.runtime_error("invalid superclass");
+                    };
+                    subclass
+                        .borrow_mut()
+                        .methods
+                        .extend(superclass.borrow().methods.clone());
                 }
             }
             // Re-borrow to make the borrow checker happy 😾
