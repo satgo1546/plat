@@ -342,6 +342,7 @@ pub enum Instruction {
     SetProperty(u8),
     Method(u8),
     Inherit,
+    GetSuper(u8),
 }
 
 #[derive(Debug, Clone)]
@@ -499,7 +500,8 @@ impl Debug for Chunk {
                 | Instruction::Class(constant)
                 | Instruction::GetProperty(constant)
                 | Instruction::SetProperty(constant)
-                | Instruction::Method(constant) => {
+                | Instruction::Method(constant)
+                | Instruction::GetSuper(constant) => {
                     write!(f, " = {:?}", self.constants[*constant as usize])?
                 }
                 _ => {}
@@ -880,6 +882,35 @@ mod compiler {
                     }
                     self.named_variable(self.previous, can_assign);
                 }
+                TokenType::Super => {
+                    if let Some(has_super_class) = self.enclosing_classes.last() {
+                        if !*has_super_class {
+                            self.error("`super` in a root class");
+                        }
+                    } else {
+                        self.error("stray `super`");
+                    }
+                    self.consume(TokenType::Dot, "`.` expected after `super`");
+                    self.consume(TokenType::Identifier, "method name expected after `.`");
+                    let name = self.make_constant(Value::String(self.previous.lexeme.to_string()));
+                    self.named_variable(
+                        Token {
+                            token_type: TokenType::Identifier,
+                            lexeme: "this",
+                            line: 0,
+                        },
+                        false,
+                    );
+                    self.named_variable(
+                        Token {
+                            token_type: TokenType::Identifier,
+                            lexeme: "super",
+                            line: 0,
+                        },
+                        false,
+                    );
+                    self.emit_instruction(Instruction::GetSuper(name));
+                }
                 _ => {
                     self.error("expression expected");
                 }
@@ -1184,13 +1215,23 @@ mod compiler {
                 self.make_constant(Value::String(class_name.lexeme.to_string()));
             self.emit_instruction(Instruction::Class(class_name_constant));
             self.define_variable(global);
-            self.enclosing_classes.push(false);
-            if self.matches(TokenType::Less) {
+            let has_superclass = self.matches(TokenType::Less);
+            self.enclosing_classes.push(has_superclass);
+            if has_superclass {
                 self.consume(TokenType::Identifier, "superclass name expected");
                 self.named_variable(self.previous, false);
                 if self.previous.lexeme == class_name.lexeme {
                     self.error("self inheritance");
                 }
+
+                self.begin_scope();
+                self.add_local(Token {
+                    token_type: TokenType::Identifier,
+                    lexeme: "super",
+                    line: 0,
+                });
+                self.define_variable(0);
+
                 self.named_variable(class_name, false);
                 self.emit_instruction(Instruction::Inherit);
             }
@@ -1208,6 +1249,9 @@ mod compiler {
             }
             self.consume(TokenType::RightBrace, "`}` expected after class body");
             self.emit_instruction(Instruction::Pop);
+            if has_superclass {
+                self.end_scope();
+            }
             self.enclosing_classes.pop().unwrap();
         }
 
@@ -1717,6 +1761,27 @@ impl VM {
                         .borrow_mut()
                         .methods
                         .extend(superclass.borrow().methods.clone());
+                }
+                Instruction::GetSuper(constant) => {
+                    let Value::String(name) = &frame.function.chunk.constants[constant as usize]
+                    else {
+                        panic!()
+                    };
+                    let Some(Value::Class(superclass)) = frame.stack.pop() else {
+                        panic!()
+                    };
+                    let Value::Instance(instance) = frame.stack.pop().unwrap() else {
+                        return self.runtime_error("not an instance");
+                    };
+                    if superclass.borrow().methods.contains_key(name) {
+                        frame.stack.push(Value::BoundMethod(Rc::new(ObjBoundMethod {
+                            receiver: Rc::clone(&instance),
+                            class: Rc::clone(&superclass),
+                            method_name: name.clone(),
+                        })));
+                    } else {
+                        return self.runtime_error("undefined property");
+                    }
                 }
             }
             // Re-borrow to make the borrow checker happy 😾
