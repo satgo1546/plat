@@ -2,11 +2,13 @@
 
 **plat**&emsp;*a platform for experiments without being formal*
 
-This repository hosts code that I have written following various tutorials about programming language design and implementation.
+This repository hosts code that I have written following various tutorials on programming languages.
+
+Each project is on a dedicated branch with linear history, where one commit typically corresponds to one chapter in the tutorial.
 
 ## Projects
 
-Each project is on a dedicated branch with linear history, where one commit usually corresponds to one chapter in the tutorial.
+Projects focus on programming language design and implementation.
 
 ### `thit` — Typing Haskell in TypeScript
 
@@ -20,6 +22,15 @@ which is in turn based on [Typing Haskell in Haskell](https://web.cecs.pdx.edu/~
 ### `lox-rs` — Lox implementation in Rust
 
 [Crafting Interpreters, part III](https://craftinginterpreters.com/a-bytecode-virtual-machine.html)
+
+## Playgrounds
+
+Playgrounds host code I have written while learning various programming languages and tools.
+They are usually monstrous single-module spaghetti that serve absolutely no purpose.
+
+### `rust-book` — Rust
+
+[The Rust Programming Language](https://doc.rust-lang.org/book/)
 
 ## License
 
