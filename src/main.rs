@@ -1,4 +1,4 @@
-use making_a_language::{Expression, Type, TypeVariable, Variable};
+use making_a_language::{Expression, Variable, infer};
 
 fn main() {
     let expr = Expression::function(
@@ -8,6 +8,7 @@ fn main() {
             Expression::Integer(114514),
         ),
     );
-    let ty = Type::function(Type::TypeVariable(TypeVariable(0)), Type::Integer);
-    println!("{:?}: {:?}", expr, ty);
+    print!("{:?}: ", expr);
+    let ty = infer(expr);
+    println!("{:?}", ty);
 }
