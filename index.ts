@@ -23,8 +23,6 @@ export function functionType(...types: Type[]): Type {
 
 export type Scope = Record<string, Type>
 
-export type VariableWithType = Variable & { type: Type }
-
 type Constraint =
 	| { tag: '=', 0: Type, 1: Type }
 
