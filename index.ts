@@ -5,6 +5,7 @@ export type Expression =
 	| { tag: 'number', value: number }
 	| { tag: 'function', parameter: Variable, body: Expression }
 	| { tag: 'call', callee: Expression, argument: Expression }
+	| { tag: 'error', variable: Variable }
 
 export type TypeVariable = {
 	tag: 'typeVariable',
@@ -53,20 +54,24 @@ function substitute_expression(expression: Expression) {
 			substitute_expression(expression.callee)
 			substitute_expression(expression.argument)
 			break
+		case 'error':
+			if (expression.variable.type) expression.variable.type = find(expression.variable.type)
+			break
 	}
 }
 
 export type Scope = Record<string, Type>
 
 type Constraint =
-	| { tag: '=', 0: Type, 1: Type }
+	| { tag: '=', 0: Type, 1: Type, expression: Expression, message: string }
 
 type TypeError =
-	| { tag: 'typeMismatch', 0: Type, 1: Type }
+	| { tag: 'typeMismatch', checked: Type, inferred: Type, message: string }
 	| { tag: 'infiniteType', typeVariable: TypeVariable, type: Type }
 
 class Inferrer {
 	constraints: Constraint[] = []
+	errors = new Map<Expression, TypeError>
 
 	newTypeVariable(): TypeVariable {
 		return { tag: 'typeVariable', name: crypto.randomUUID() }
@@ -88,19 +93,45 @@ class Inferrer {
 				return functionType(parameterType, returnType)
 			}
 			case 'call': {
-				const argumentType = this.infer(scope, expression.argument)
-				const returnType = this.newTypeVariable()
-				const type = functionType(argumentType, returnType)
-				this.check(scope, expression.callee, type)
-				return returnType
+				let calleeType = this.infer(scope, expression.callee)
+				if (calleeType.tag !== 'function') {
+					this.constraints.push({
+						tag: '=',
+						expression,
+						0: calleeType,
+						1: calleeType = {
+							tag: 'function',
+							parameter: this.newTypeVariable(),
+							returnType: this.newTypeVariable(),
+						},
+						message: 'expected function',
+					})
+				}
+				this.check(scope, expression.argument, calleeType.parameter)
+				return calleeType.returnType
 			}
+			case 'error':
+				return expression.variable.type = this.newTypeVariable()
 		}
 	}
 
 	check(scope: Scope, expression: Expression, type: Type): void {
 		if (expression.tag === 'number' && type.tag === 'number') {
 			// nothing to do
-		} else if (expression.tag === 'function' && type.tag === 'function') {
+		} else if (expression.tag === 'function') {
+			if (type.tag !== 'function') {
+				this.constraints.push({
+					tag: '=',
+					expression,
+					0: type,
+					1: type = {
+						tag: 'function',
+						parameter: this.newTypeVariable(),
+						returnType: this.newTypeVariable(),
+					},
+					message: 'unexpected function',
+				})
+			}
 			expression.parameter.type = type.parameter
 			this.check({
 				__proto__: null!,
@@ -109,18 +140,30 @@ class Inferrer {
 			}, expression.body, type.returnType)
 		} else {
 			const actualType = this.infer(scope, expression)
-			this.constraints.push({ tag: '=', 0: type, 1: actualType })
+			this.constraints.push({ tag: '=', expression, 0: type, 1: actualType, message: 'type mismatch' })
 		}
 	}
 
-	solve(): TypeError | undefined {
+	solve(): Map<Expression, TypeError> {
 		for (const constraint of this.constraints) switch (constraint.tag) {
 			case '=': {
 				const error = this.unify(constraint[0], constraint[1])
-				if (error) return error
+				if (error?.tag === 'typeMismatch') {
+					error.message ||= constraint.message
+				}
+				if (error) {
+					this.errors.set(constraint.expression, error)
+				}
 				break
 			}
 		}
+		for (const error of this.errors.values()) {
+			if (error.tag === 'typeMismatch') {
+				error.checked = find(error.checked)
+				error.inferred = find(error.inferred)
+			}
+		}
+		return this.errors
 	}
 
 	unify(a: Type, b: Type): TypeError | undefined {
@@ -151,7 +194,7 @@ class Inferrer {
 		} else if (b.tag === 'typeVariable') {
 			this.unify(b, a)
 		} else {
-			return { tag: 'typeMismatch', 0: a, 1: b }
+			return { tag: 'typeMismatch', checked: a, inferred: b, message: '' }
 		}
 	}
 }
@@ -160,15 +203,17 @@ class Inferrer {
  * @param expression The expression to type.
  * Variables therein will be annotated with `type` field.
  */
-export function infer(expression: Expression): Type {
+export function infer(expression: Expression): {
+	type: Type,
+	errors: Map<Expression, TypeError>
+} {
 	const inferrer = new Inferrer
 	const type = inferrer.infer(Object.create(null), expression)
 	console.log('Constraints:')
 	for (const constraint of inferrer.constraints) {
 		console.log('•', constraint)
 	}
-	const error = inferrer.solve()
-	if (error) throw error
+	const errors = inferrer.solve()
 	substitute_expression(expression)
-	return find(type)
+	return { type: find(type), errors }
 }

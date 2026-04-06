@@ -13,5 +13,6 @@ const expr: Expression = {
 		argument: { tag: 'number', value: 114514 },
 	},
 }
-const type = infer(expr)
+const { type, errors } = infer(expr)
 console.log(expr, ':', type)
+console.log('errors:', errors)
