@@ -1,5 +1,5 @@
 import { isDeepStrictEqual } from 'node:util'
-import { Expression } from './index.ts'
+import { type Expression, type Type as ExpressionType, type TypeVariable as ExpressionTypeVariable } from './index.ts'
 
 export type Variable = { tag: 'variable', name: string, type: Type }
 
@@ -60,6 +60,58 @@ function getNodeType(node: Node): Type {
 	}
 }
 
-export function lower(expression: Expression, type: Type) {
+export function lowerType(type: ExpressionType): Type {
+	const typeVariables = new Map<string, number>
+	let result = function recurse(type: ExpressionType): Type {
+		switch (type.tag) {
+			case 'typeVariable':
+				return {
+					tag: 'typeVariable',
+					index: typeVariables.getOrInsert(type.name, typeVariables.size),
+				}
+			case 'number':
+				return { tag: 'number' }
+			case 'function':
+				return {
+					tag: 'function',
+					parameter: recurse(type.parameter),
+					returnType: recurse(type.returnType),
+				}
+		}
+	}(type)
+	console.log(typeVariables)
+	for (const _ of typeVariables.keys()) {
+		result = { tag: 'generic', parameter: 'type', definition: result }
+	}
+	return result
+}
+
+function lowerExpression(expression: Expression): Node {
+	switch (expression.tag) {
+		case 'variable':
+			if (!expression.type) throw new Error('untyped expression')
+			return { tag: 'variable', name: expression.name, type: lowerType(expression.type) }
+		case 'number':
+			return { tag: 'number', value: expression.value }
+		case 'function':
+			if (!expression.parameter.type) throw new Error('untyped expression')
+			return {
+				tag: 'function',
+				parameter: { tag: 'variable', name: expression.parameter.name, type: lowerType(expression.parameter.type) },
+				body: lowerExpression(expression.body),
+			}
+		case 'call':
+			return {
+				tag: 'call',
+				callee: lowerExpression(expression.callee),
+				argument: lowerExpression(expression.argument),
+			}
+		case 'error':
+			throw new Error('expression with error')
+	}
+}
+
+export function lower(expression: Expression, type: ExpressionType) {
+	lowerType(type)
 	throw Error('not implemented')
 }
