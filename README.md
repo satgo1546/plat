@@ -23,6 +23,10 @@ which is in turn based on [Typing Haskell in Haskell](https://web.cecs.pdx.edu/~
 
 [Crafting Interpreters, part III](https://craftinginterpreters.com/a-bytecode-virtual-machine.html)
 
+### `making-a-language` — Making a Language (abandoned)
+
+[Making a Language](https://thunderseethe.dev/series/making-a-language/)
+
 ## Playgrounds
 
 Playgrounds host code I have written while learning various programming languages and tools.
