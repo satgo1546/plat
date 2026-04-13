@@ -1,4 +1,5 @@
 use std::str::FromStr;
+use crate::ast::*;
 
 grammar;
 
@@ -9,21 +10,17 @@ match {
     _
 }
 
-pub Program: String = <f: FunctionDefinition> => f;
+pub Program: Program = <function_definition: FunctionDefinition> => Program {<>};
 
-FunctionDefinition: String = {
-    <return_type: FunctionReturnType> <id: Identifier> "(" ")" <block: Block> => {
-        format!("{} {}() {}", return_type, id, block)
-    }
-}
+FunctionDefinition: FunctionDefinition = <function_type: FunctionType> <name: Identifier> "(" ")" <body: Block> => FunctionDefinition {<>};
 
-FunctionReturnType: String = "int" => "int".to_string();
+FunctionType: FunctionType = "int" => FunctionType {};
 
-Block: String = "{" <statement: Statement> "}" => format!("{{ {} }}", statement);
+Block: Block = "{" <statement: Statement> "}" => Block { statements: vec![statement] };
 
-Statement: String = "return" <x: Number> ";" => format!("return {};", x);
+Statement: Statement = "return" <x: Number> ";" => Statement {};
 
-Number: String = <x: IntegerLiteral> => x.to_string();
+Number: i32 = IntegerLiteral => <>;
 
 Identifier: String = r"[_a-zA-Z][_a-zA-Z0-9]*" => <>.to_string();
 

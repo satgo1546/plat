@@ -3,6 +3,7 @@ use lalrpop_util::lalrpop_mod;
 use std::path::PathBuf;
 
 lalrpop_mod!(grammar);
+mod ast;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 enum Mode {
@@ -29,7 +30,7 @@ pub fn main() -> std::io::Result<()> {
     let input = std::fs::read_to_string(args.input)?;
     let ast = grammar::ProgramParser::new().parse(&input).unwrap();
     let output = match args.mode {
-        Mode::Koopa => format!("{}", ast),
+        Mode::Koopa => format!("{:#?}", ast),
         Mode::RISCV => todo!(),
     };
     match args.output {
