@@ -1,0 +1,36 @@
+use std::str::FromStr;
+
+grammar;
+
+match {
+    r"\s*" => {},
+    r"//[^\n]*[\n]*" => {},
+    r"/\*([^*]*\*+)+/" => {},
+    _
+}
+
+pub Program: String = <f: FunctionDefinition> => f;
+
+FunctionDefinition: String = {
+    <return_type: FunctionReturnType> <id: Identifier> "(" ")" <block: Block> => {
+        format!("{} {}() {}", return_type, id, block)
+    }
+}
+
+FunctionReturnType: String = "int" => "int".to_string();
+
+Block: String = "{" <statement: Statement> "}" => format!("{{ {} }}", statement);
+
+Statement: String = "return" <x: Number> ";" => format!("return {};", x);
+
+Number: String = <x: IntegerLiteral> => x.to_string();
+
+Identifier: String = r"[_a-zA-Z][_a-zA-Z0-9]*" => <>.to_string();
+
+IntegerLiteral: i32 = {
+    r"[1-9][0-9]*" => i32::from_str(<>).unwrap(),
+    r"0[xX][0-9a-fA-F]+" => i32::from_str_radix(&<>[2..], 16).unwrap(),
+    r"0[0-7]*" => i32::from_str_radix(<>, 8).unwrap(),
+    r"0[oO][0-7]+" => i32::from_str_radix(&<>[2..], 8).unwrap(),
+    r"0[bB][01]+" => i32::from_str_radix(&<>[2..], 2).unwrap(),
+}

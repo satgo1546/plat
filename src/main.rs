@@ -1,3 +1,6 @@
 fn main() {
-    println!("Hello, world!");
+    match sysy::main() {
+        Ok(()) => {}
+        Err(e) => eprintln!("Error: {}", e),
+    }
 }
