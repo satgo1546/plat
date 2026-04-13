@@ -2,9 +2,11 @@
 name = "sysy"
 version = "0.0.0"
 edition = "2024"
+license = "GPL-3.0"
 
 [dependencies]
 clap = { version = "4.6.0", features = ["unicode", "derive"] }
+koopa = "0.0.10"
 lalrpop-util = { version = "0.23.1", features = ["lexer", "unicode"] }
 
 [build-dependencies]

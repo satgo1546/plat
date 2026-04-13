@@ -20,4 +20,6 @@ pub struct Block {
 }
 
 #[derive(Debug, Clone)]
-pub struct Statement {}
+pub struct Statement {
+    pub value: i32,
+}

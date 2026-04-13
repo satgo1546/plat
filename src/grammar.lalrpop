@@ -18,7 +18,7 @@ FunctionType: FunctionType = "int" => FunctionType {};
 
 Block: Block = "{" <statement: Statement> "}" => Block { statements: vec![statement] };
 
-Statement: Statement = "return" <x: Number> ";" => Statement {};
+Statement: Statement = "return" <x: Number> ";" => Statement { value: x };
 
 Number: i32 = IntegerLiteral => <>;
 
