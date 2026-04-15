@@ -10,6 +10,7 @@ use lalrpop_util::lalrpop_mod;
 use std::{io::Write, path::PathBuf};
 
 lalrpop_mod!(grammar);
+mod asm;
 mod ast;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
@@ -63,7 +64,7 @@ pub fn main() -> std::io::Result<()> {
     let mut output = Vec::<u8>::new();
     match args.mode {
         Mode::Koopa => KoopaGenerator::new(&mut output).generate_on(&program)?,
-        Mode::RISCV => todo!(),
+        Mode::RISCV => asm::emit_program(&mut output, &program)?,
     }
     match args.output {
         Some(output_path) => std::fs::write(output_path, output)?,
