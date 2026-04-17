@@ -1,4 +1,4 @@
-use std::io::Write;
+use std::{collections::HashMap, io::Write};
 
 pub fn emit_program<W: Write>(f: &mut W, program: &koopa::ir::Program) -> std::io::Result<()> {
     writeln!(f, ".text\n.globl main")?;
@@ -8,12 +8,51 @@ pub fn emit_program<W: Write>(f: &mut W, program: &koopa::ir::Program) -> std::i
     Ok(())
 }
 
+#[derive(Debug, Default)]
+struct StackFrame {
+    map: HashMap<koopa::ir::Value, i32>,
+    offset: i32,
+}
+
+impl StackFrame {
+    fn load<W: Write>(
+        &self,
+        f: &mut W,
+        dfg: &koopa::ir::dfg::DataFlowGraph,
+        register: &str,
+        value: koopa::ir::Value,
+    ) -> std::io::Result<()> {
+        if let koopa::ir::ValueKind::Integer(integer) = dfg.value(value).kind() {
+            writeln!(f, "li {}, {}", register, integer.value())
+        } else {
+            writeln!(f, "lw {}, {}(sp)", register, self.map[&value] + self.offset)
+        }
+    }
+
+    fn store<W: Write>(
+        &self,
+        f: &mut W,
+        register: &str,
+        value: koopa::ir::Value,
+    ) -> std::io::Result<()> {
+        writeln!(f, "sw {}, {}(sp)", register, self.map[&value] + self.offset)
+    }
+}
+
 fn emit_function<W: Write>(f: &mut W, func_data: &koopa::ir::FunctionData) -> std::io::Result<()> {
     writeln!(f, "{}:", &func_data.name()[1..])?;
     for (i, (_, node)) in func_data.layout().bbs().iter().enumerate() {
         writeln!(f, "{}__{}:", &func_data.name()[1..], i)?;
-        if let Some(&inst) = node.insts().back_key() {
-            emit_value(f, func_data.dfg(), inst)?;
+        let mut stack_frame = StackFrame::default();
+        for &inst in node.insts().keys() {
+            if !func_data.dfg().value(inst).ty().is_unit() {
+                stack_frame.offset += 4;
+                stack_frame.map.insert(inst, -stack_frame.offset);
+            }
+        }
+        writeln!(f, "addi sp, sp, {}", -stack_frame.offset)?;
+        for &inst in node.insts().keys() {
+            emit_value(f, func_data.dfg(), &stack_frame, inst)?;
         }
     }
     Ok(())
@@ -22,12 +61,11 @@ fn emit_function<W: Write>(f: &mut W, func_data: &koopa::ir::FunctionData) -> st
 fn emit_value<W: Write>(
     f: &mut W,
     dfg: &koopa::ir::dfg::DataFlowGraph,
+    stack_frame: &StackFrame,
     value: koopa::ir::Value,
 ) -> std::io::Result<()> {
     match dfg.value(value).kind() {
-        koopa::ir::ValueKind::Integer(integer) => {
-            writeln!(f, "li t1, {}", integer.value())
-        }
+        koopa::ir::ValueKind::Integer(_) => panic!("how did you do that?"),
         koopa::ir::ValueKind::ZeroInit(_) => todo!(),
         koopa::ir::ValueKind::Undef(_) => todo!(),
         koopa::ir::ValueKind::Aggregate(_) => todo!(),
@@ -40,10 +78,8 @@ fn emit_value<W: Write>(
         koopa::ir::ValueKind::GetPtr(_) => todo!(),
         koopa::ir::ValueKind::GetElemPtr(_) => todo!(),
         koopa::ir::ValueKind::Binary(binary) => {
-            emit_value(f, dfg, binary.lhs())?;
-            writeln!(f, "addi sp, sp, -4\nsw t1, 0(sp)")?;
-            emit_value(f, dfg, binary.rhs())?;
-            writeln!(f, "lw t2, 0(sp)")?;
+            stack_frame.load(f, dfg, "t2", binary.lhs())?;
+            stack_frame.load(f, dfg, "t1", binary.rhs())?;
             match binary.op() {
                 koopa::ir::BinaryOp::NotEq => todo!(),
                 koopa::ir::BinaryOp::Eq => {
@@ -69,17 +105,16 @@ fn emit_value<W: Write>(
                 koopa::ir::BinaryOp::Shr => todo!(),
                 koopa::ir::BinaryOp::Sar => todo!(),
             }
-            writeln!(f, "addi sp, sp, 4")
+            stack_frame.store(f, "t1", value)
         }
         koopa::ir::ValueKind::Branch(_) => todo!(),
         koopa::ir::ValueKind::Jump(_) => todo!(),
         koopa::ir::ValueKind::Call(_) => todo!(),
         koopa::ir::ValueKind::Return(ret) => {
             if let Some(value) = ret.value() {
-                emit_value(f, dfg, value)?;
-                writeln!(f, "mv a0, t1")?;
+                stack_frame.load(f, dfg, "a0", value)?;
             }
-            writeln!(f, "ret")
+            writeln!(f, "addi sp, sp, {}\nret", stack_frame.offset)
         }
     }
 }
