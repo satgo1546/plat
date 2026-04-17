@@ -16,9 +16,34 @@ FunctionDefinition: FunctionDefinition = <function_type: FunctionType> <name: Id
 
 FunctionType: FunctionType = "int" => FunctionType {};
 
-Block: Block = "{" <statement: Statement> "}" => Block { statements: vec![statement] };
+Block: Block = "{" <statement: BlockItem*> "}" => Block { statements: statement.concat() };
 
-Statement: Statement = "return" <x: Expression> ";" => Statement { value: x };
+BlockItem: Vec<Statement> = {
+    Declaration,
+    Statement => vec![<>],
+};
+
+BasicType: BasicType = "int" => BasicType {};
+
+Declaration: Vec<Statement> = {
+    ConstantDeclaration,
+};
+
+ConstantDeclaration: Vec<Statement> = "const" <constant_type: BasicType> <mut items: (<ConstantDefinition> ",")*> <last: ConstantDefinition> ";" => {
+    items.push(last);
+    items
+        .into_iter()
+        .map(|(name, value)| Statement::Constant {
+            constant_type: constant_type.clone(),
+            name,
+            value,
+        })
+        .collect()
+};
+
+ConstantDefinition: (String, Box<Expression>) = <Identifier> "=" <Expression> => (<>);
+
+Statement: Statement = "return" <x: Expression> ";" => Statement::Return(x);
 
 Expression: Box<Expression> = LogicOr;
 
@@ -96,8 +121,13 @@ UnaryOperator: UnaryOperator = {
 }
 
 Primary: Box<Expression> = {
+    LValue,
     Number => Box::new(Expression::Number(<>)),
     "(" <Expression> ")",
+};
+
+LValue: Box<Expression> = {
+    Identifier => Box::new(Expression::Variable(<>)),
 };
 
 Number: i32 = IntegerLiteral => <>;

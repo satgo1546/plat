@@ -7,7 +7,7 @@ use koopa::{
     },
 };
 use lalrpop_util::lalrpop_mod;
-use std::{io::Write, path::PathBuf};
+use std::{collections::HashMap, io::Write, path::PathBuf};
 
 lalrpop_mod!(grammar);
 mod asm;
@@ -33,18 +33,55 @@ struct Args {
     output: Option<PathBuf>,
 }
 
+fn evaluate_expression(scope: &HashMap<String, i32>, expression: &ast::Expression) -> i32 {
+    match expression {
+        ast::Expression::Variable(name) => scope[name],
+        ast::Expression::Number(x) => *x,
+        ast::Expression::Unary(operator, expression) => {
+            let x = evaluate_expression(scope, expression);
+            match operator {
+                ast::UnaryOperator::Plus => x,
+                ast::UnaryOperator::Minus => -x,
+                ast::UnaryOperator::BooleanNot => (x == 0).into(),
+                ast::UnaryOperator::BitNot => !x,
+            }
+        }
+        ast::Expression::Binary(a, operator, b) => {
+            let a = evaluate_expression(scope, a);
+            let b = evaluate_expression(scope, b);
+            match operator {
+                ast::BinaryOperator::Plus => a + b,
+                ast::BinaryOperator::Minus => a - b,
+                ast::BinaryOperator::Multiply => a * b,
+                ast::BinaryOperator::Divide => a / b,
+                ast::BinaryOperator::Modulo => a % b,
+                ast::BinaryOperator::Less => (a < b).into(),
+                ast::BinaryOperator::LessEqual => (a <= b).into(),
+                ast::BinaryOperator::Greater => (a > b).into(),
+                ast::BinaryOperator::GreaterEqual => (a >= b).into(),
+                ast::BinaryOperator::Equal => (a == b).into(),
+                ast::BinaryOperator::NotEqual => (a != b).into(),
+                ast::BinaryOperator::BooleanAnd => (a != 0 && b != 0).into(),
+                ast::BinaryOperator::BooleanOr => (a != 0 || b != 0).into(),
+            }
+        }
+    }
+}
+
 fn lower_expression(
     insts: &mut Vec<Value>,
     func_data: &mut FunctionData,
+    scope: &HashMap<String, i32>,
     expression: &ast::Expression,
 ) -> Value {
     match expression {
+        ast::Expression::Variable(name) => func_data.dfg_mut().new_value().integer(scope[name]),
         ast::Expression::Number(x) => func_data.dfg_mut().new_value().integer(*x),
         ast::Expression::Unary(operator, expression) => match operator {
-            ast::UnaryOperator::Plus => lower_expression(insts, func_data, expression),
+            ast::UnaryOperator::Plus => lower_expression(insts, func_data, scope, expression),
             ast::UnaryOperator::Minus => {
                 let zero = func_data.dfg_mut().new_value().integer(0);
-                let x = lower_expression(insts, func_data, expression);
+                let x = lower_expression(insts, func_data, scope, expression);
                 let value = func_data
                     .dfg_mut()
                     .new_value()
@@ -54,7 +91,7 @@ fn lower_expression(
             }
             ast::UnaryOperator::BooleanNot => {
                 let zero = func_data.dfg_mut().new_value().integer(0);
-                let x = lower_expression(insts, func_data, expression);
+                let x = lower_expression(insts, func_data, scope, expression);
                 let value = func_data
                     .dfg_mut()
                     .new_value()
@@ -64,7 +101,7 @@ fn lower_expression(
             }
             ast::UnaryOperator::BitNot => {
                 let minus1 = func_data.dfg_mut().new_value().integer(-1);
-                let x = lower_expression(insts, func_data, expression);
+                let x = lower_expression(insts, func_data, scope, expression);
                 let value = func_data
                     .dfg_mut()
                     .new_value()
@@ -74,8 +111,8 @@ fn lower_expression(
             }
         },
         ast::Expression::Binary(a, operator, b) => {
-            let mut a = lower_expression(insts, func_data, a);
-            let mut b = lower_expression(insts, func_data, b);
+            let mut a = lower_expression(insts, func_data, scope, a);
+            let mut b = lower_expression(insts, func_data, scope, b);
             if let ast::BinaryOperator::BooleanAnd | ast::BinaryOperator::BooleanOr = operator {
                 let zero = func_data.dfg_mut().new_value().integer(0);
                 a = func_data
@@ -129,12 +166,22 @@ pub fn main() -> std::io::Result<()> {
         .basic_block(Some("%entry".into()));
     main_data.layout_mut().bbs_mut().extend([entry]);
     let mut insts = vec![];
-    let ret_value = lower_expression(
-        &mut insts,
-        main_data,
-        &ast.function_definition.body.statements[0].value,
-    );
-    insts.push(main_data.dfg_mut().new_value().ret(Some(ret_value)));
+    let mut scope = HashMap::new();
+    for statement in ast.function_definition.body.statements {
+        match statement {
+            ast::Statement::Constant {
+                constant_type: ast::BasicType {},
+                name,
+                value,
+            } => {
+                scope.insert(name, evaluate_expression(&scope, &value));
+            }
+            ast::Statement::Return(expression) => {
+                let ret_value = lower_expression(&mut insts, main_data, &scope, &expression);
+                insts.push(main_data.dfg_mut().new_value().ret(Some(ret_value)));
+            }
+        }
+    }
     main_data
         .layout_mut()
         .bb_mut(entry)

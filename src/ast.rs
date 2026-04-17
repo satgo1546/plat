@@ -20,12 +20,21 @@ pub struct Block {
 }
 
 #[derive(Debug, Clone)]
-pub struct Statement {
-    pub value: Box<Expression>,
+pub struct BasicType {}
+
+#[derive(Debug, Clone)]
+pub enum Statement {
+    Constant {
+        constant_type: BasicType,
+        name: String,
+        value: Box<Expression>,
+    },
+    Return(Box<Expression>),
 }
 
 #[derive(Debug, Clone)]
 pub enum Expression {
+    Variable(String),
     Number(i32),
     Unary(UnaryOperator, Box<Expression>),
     Binary(Box<Expression>, BinaryOperator, Box<Expression>),
