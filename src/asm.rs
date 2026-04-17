@@ -81,14 +81,24 @@ fn emit_value<W: Write>(
             stack_frame.load(f, dfg, "t2", binary.lhs())?;
             stack_frame.load(f, dfg, "t1", binary.rhs())?;
             match binary.op() {
-                koopa::ir::BinaryOp::NotEq => todo!(),
+                koopa::ir::BinaryOp::NotEq => {
+                    writeln!(f, "xor t1, t2, t1\nsnez t1, t1")?;
+                }
                 koopa::ir::BinaryOp::Eq => {
                     writeln!(f, "xor t1, t2, t1\nseqz t1, t1")?;
                 }
-                koopa::ir::BinaryOp::Gt => todo!(),
-                koopa::ir::BinaryOp::Lt => todo!(),
-                koopa::ir::BinaryOp::Ge => todo!(),
-                koopa::ir::BinaryOp::Le => todo!(),
+                koopa::ir::BinaryOp::Gt => {
+                    writeln!(f, "sgt t1, t2, t1")?;
+                }
+                koopa::ir::BinaryOp::Lt => {
+                    writeln!(f, "slt t1, t2, t1")?;
+                }
+                koopa::ir::BinaryOp::Ge => {
+                    writeln!(f, "slt t1, t2, t1\nseqz t1, t1")?;
+                }
+                koopa::ir::BinaryOp::Le => {
+                    writeln!(f, "sgt t1, t2, t1\nseqz t1, t1")?;
+                }
                 koopa::ir::BinaryOp::Add => {
                     writeln!(f, "add t1, t2, t1")?;
                 }
@@ -104,14 +114,24 @@ fn emit_value<W: Write>(
                 koopa::ir::BinaryOp::Mod => {
                     writeln!(f, "rem t1, t2, t1")?;
                 }
-                koopa::ir::BinaryOp::And => todo!(),
-                koopa::ir::BinaryOp::Or => todo!(),
+                koopa::ir::BinaryOp::And => {
+                    writeln!(f, "and t1, t2, t1")?;
+                }
+                koopa::ir::BinaryOp::Or => {
+                    writeln!(f, "or t1, t2, t1")?;
+                }
                 koopa::ir::BinaryOp::Xor => {
                     writeln!(f, "xor t1, t2, t1")?;
                 }
-                koopa::ir::BinaryOp::Shl => todo!(),
-                koopa::ir::BinaryOp::Shr => todo!(),
-                koopa::ir::BinaryOp::Sar => todo!(),
+                koopa::ir::BinaryOp::Shl => {
+                    writeln!(f, "sll t1, t2, t1")?;
+                }
+                koopa::ir::BinaryOp::Shr => {
+                    writeln!(f, "srl t1, t2, t1")?;
+                }
+                koopa::ir::BinaryOp::Sar => {
+                    writeln!(f, "sra t1, t2, t1")?;
+                }
             }
             stack_frame.store(f, "t1", value)
         }

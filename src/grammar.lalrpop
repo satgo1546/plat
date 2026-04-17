@@ -20,9 +20,47 @@ Block: Block = "{" <statement: Statement> "}" => Block { statements: vec![statem
 
 Statement: Statement = "return" <x: Expression> ";" => Statement { value: x };
 
-Expression: Box<Expression> = {
+Expression: Box<Expression> = LogicOr;
+
+LogicOr: Box<Expression> = {
+    LogicOr LogicOrOperator LogicAnd => Box::new(Expression::Binary(<>)),
+    LogicAnd,
+};
+
+LogicOrOperator: BinaryOperator = {
+    "||" => BinaryOperator::BooleanOr,
+}
+
+LogicAnd: Box<Expression> = {
+    LogicAnd LogicAndOperator Equality => Box::new(Expression::Binary(<>)),
+    Equality,
+};
+
+LogicAndOperator: BinaryOperator = {
+    "&&" => BinaryOperator::BooleanAnd,
+}
+
+Equality: Box<Expression> = {
+    Equality EqualityOperator Comparison => Box::new(Expression::Binary(<>)),
+    Comparison,
+};
+
+EqualityOperator: BinaryOperator = {
+    "==" => BinaryOperator::Equal,
+    "!=" => BinaryOperator::NotEqual,
+}
+
+Comparison: Box<Expression> = {
+    Comparison ComparisonOperator Term => Box::new(Expression::Binary(<>)),
     Term,
 };
+
+ComparisonOperator: BinaryOperator = {
+    "<" => BinaryOperator::Less,
+    "<=" => BinaryOperator::LessEqual,
+    ">" => BinaryOperator::Greater,
+    ">=" => BinaryOperator::GreaterEqual,
+}
 
 Term: Box<Expression> = {
     Term TermOperator Factor => Box::new(Expression::Binary(<>)),

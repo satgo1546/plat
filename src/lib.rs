@@ -74,15 +74,36 @@ fn lower_expression(
             }
         },
         ast::Expression::Binary(a, operator, b) => {
+            let mut a = lower_expression(insts, func_data, a);
+            let mut b = lower_expression(insts, func_data, b);
+            if let ast::BinaryOperator::BooleanAnd | ast::BinaryOperator::BooleanOr = operator {
+                let zero = func_data.dfg_mut().new_value().integer(0);
+                a = func_data
+                    .dfg_mut()
+                    .new_value()
+                    .binary(ir::BinaryOp::NotEq, zero, a);
+                b = func_data
+                    .dfg_mut()
+                    .new_value()
+                    .binary(ir::BinaryOp::NotEq, zero, b);
+                insts.push(a);
+                insts.push(b);
+            }
             let operator = match operator {
                 ast::BinaryOperator::Plus => ir::BinaryOp::Add,
                 ast::BinaryOperator::Minus => ir::BinaryOp::Sub,
                 ast::BinaryOperator::Multiply => ir::BinaryOp::Mul,
                 ast::BinaryOperator::Divide => ir::BinaryOp::Div,
                 ast::BinaryOperator::Modulo => ir::BinaryOp::Mod,
+                ast::BinaryOperator::Less => ir::BinaryOp::Lt,
+                ast::BinaryOperator::LessEqual => ir::BinaryOp::Le,
+                ast::BinaryOperator::Greater => ir::BinaryOp::Gt,
+                ast::BinaryOperator::GreaterEqual => ir::BinaryOp::Ge,
+                ast::BinaryOperator::Equal => ir::BinaryOp::Eq,
+                ast::BinaryOperator::NotEqual => ir::BinaryOp::NotEq,
+                ast::BinaryOperator::BooleanAnd => ir::BinaryOp::And,
+                ast::BinaryOperator::BooleanOr => ir::BinaryOp::Or,
             };
-            let a = lower_expression(insts, func_data, a);
-            let b = lower_expression(insts, func_data, b);
             let value = func_data.dfg_mut().new_value().binary(operator, a, b);
             insts.push(value);
             value
