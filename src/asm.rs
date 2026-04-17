@@ -12,7 +12,7 @@ fn emit_function<W: Write>(f: &mut W, func_data: &koopa::ir::FunctionData) -> st
     writeln!(f, "{}:", &func_data.name()[1..])?;
     for (i, (_, node)) in func_data.layout().bbs().iter().enumerate() {
         writeln!(f, "{}__{}:", &func_data.name()[1..], i)?;
-        for &inst in node.insts().keys() {
+        if let Some(&inst) = node.insts().back_key() {
             emit_value(f, func_data.dfg(), inst)?;
         }
     }
@@ -39,7 +39,38 @@ fn emit_value<W: Write>(
         koopa::ir::ValueKind::Store(_) => todo!(),
         koopa::ir::ValueKind::GetPtr(_) => todo!(),
         koopa::ir::ValueKind::GetElemPtr(_) => todo!(),
-        koopa::ir::ValueKind::Binary(_) => todo!(),
+        koopa::ir::ValueKind::Binary(binary) => {
+            emit_value(f, dfg, binary.lhs())?;
+            writeln!(f, "addi sp, sp, -4\nsw t1, 0(sp)")?;
+            emit_value(f, dfg, binary.rhs())?;
+            writeln!(f, "lw t2, 0(sp)")?;
+            match binary.op() {
+                koopa::ir::BinaryOp::NotEq => todo!(),
+                koopa::ir::BinaryOp::Eq => {
+                    writeln!(f, "xor t1, t2, t1\nseqz t1, t1")?;
+                }
+                koopa::ir::BinaryOp::Gt => todo!(),
+                koopa::ir::BinaryOp::Lt => todo!(),
+                koopa::ir::BinaryOp::Ge => todo!(),
+                koopa::ir::BinaryOp::Le => todo!(),
+                koopa::ir::BinaryOp::Add => todo!(),
+                koopa::ir::BinaryOp::Sub => {
+                    writeln!(f, "sub t1, t2, t1")?;
+                }
+                koopa::ir::BinaryOp::Mul => todo!(),
+                koopa::ir::BinaryOp::Div => todo!(),
+                koopa::ir::BinaryOp::Mod => todo!(),
+                koopa::ir::BinaryOp::And => todo!(),
+                koopa::ir::BinaryOp::Or => todo!(),
+                koopa::ir::BinaryOp::Xor => {
+                    writeln!(f, "xor t1, t2, t1")?;
+                }
+                koopa::ir::BinaryOp::Shl => todo!(),
+                koopa::ir::BinaryOp::Shr => todo!(),
+                koopa::ir::BinaryOp::Sar => todo!(),
+            }
+            writeln!(f, "addi sp, sp, 4")
+        }
         koopa::ir::ValueKind::Branch(_) => todo!(),
         koopa::ir::ValueKind::Jump(_) => todo!(),
         koopa::ir::ValueKind::Call(_) => todo!(),

@@ -2,7 +2,7 @@ use clap::Parser;
 use koopa::{
     back::KoopaGenerator,
     ir::{
-        self,
+        self, FunctionData, Value,
         builder::{BasicBlockBuilder, LocalInstBuilder, ValueBuilder},
     },
 };
@@ -33,6 +33,49 @@ struct Args {
     output: Option<PathBuf>,
 }
 
+fn lower_expression(
+    insts: &mut Vec<Value>,
+    func_data: &mut FunctionData,
+    expression: &ast::Expression,
+) -> Value {
+    match expression {
+        ast::Expression::Number(x) => func_data.dfg_mut().new_value().integer(*x),
+        ast::Expression::Unary(operator, expression) => match operator {
+            ast::UnaryOperator::Plus => lower_expression(insts, func_data, expression),
+            ast::UnaryOperator::Minus => {
+                let zero = func_data.dfg_mut().new_value().integer(0);
+                let x = lower_expression(insts, func_data, expression);
+                let value = func_data
+                    .dfg_mut()
+                    .new_value()
+                    .binary(ir::BinaryOp::Sub, zero, x);
+                insts.push(value);
+                value
+            }
+            ast::UnaryOperator::BooleanNot => {
+                let zero = func_data.dfg_mut().new_value().integer(0);
+                let x = lower_expression(insts, func_data, expression);
+                let value = func_data
+                    .dfg_mut()
+                    .new_value()
+                    .binary(ir::BinaryOp::Eq, zero, x);
+                insts.push(value);
+                value
+            }
+            ast::UnaryOperator::BitNot => {
+                let minus1 = func_data.dfg_mut().new_value().integer(-1);
+                let x = lower_expression(insts, func_data, expression);
+                let value = func_data
+                    .dfg_mut()
+                    .new_value()
+                    .binary(ir::BinaryOp::Xor, minus1, x);
+                insts.push(value);
+                value
+            }
+        },
+    }
+}
+
 pub fn main() -> std::io::Result<()> {
     let args = Args::parse();
     let input = std::fs::read_to_string(args.input)?;
@@ -50,16 +93,18 @@ pub fn main() -> std::io::Result<()> {
         .new_bb()
         .basic_block(Some("%entry".into()));
     main_data.layout_mut().bbs_mut().extend([entry]);
-    let forty_two = main_data
-        .dfg_mut()
-        .new_value()
-        .integer(ast.function_definition.body.statements[0].value);
-    let ret = main_data.dfg_mut().new_value().ret(Some(forty_two));
+    let mut insts = vec![];
+    let ret_value = lower_expression(
+        &mut insts,
+        main_data,
+        &ast.function_definition.body.statements[0].value,
+    );
+    insts.push(main_data.dfg_mut().new_value().ret(Some(ret_value)));
     main_data
         .layout_mut()
         .bb_mut(entry)
         .insts_mut()
-        .extend([ret]);
+        .extend(insts);
 
     let mut output = Vec::<u8>::new();
     match args.mode {

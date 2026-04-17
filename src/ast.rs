@@ -21,5 +21,19 @@ pub struct Block {
 
 #[derive(Debug, Clone)]
 pub struct Statement {
-    pub value: i32,
+    pub value: Box<Expression>,
+}
+
+#[derive(Debug, Clone)]
+pub enum Expression {
+    Number(i32),
+    Unary(UnaryOperator, Box<Expression>),
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum UnaryOperator {
+    Plus,
+    Minus,
+    BooleanNot,
+    BitNot,
 }
