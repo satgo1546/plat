@@ -73,6 +73,20 @@ fn lower_expression(
                 value
             }
         },
+        ast::Expression::Binary(a, operator, b) => {
+            let operator = match operator {
+                ast::BinaryOperator::Plus => ir::BinaryOp::Add,
+                ast::BinaryOperator::Minus => ir::BinaryOp::Sub,
+                ast::BinaryOperator::Multiply => ir::BinaryOp::Mul,
+                ast::BinaryOperator::Divide => ir::BinaryOp::Div,
+                ast::BinaryOperator::Modulo => ir::BinaryOp::Mod,
+            };
+            let a = lower_expression(insts, func_data, a);
+            let b = lower_expression(insts, func_data, b);
+            let value = func_data.dfg_mut().new_value().binary(operator, a, b);
+            insts.push(value);
+            value
+        }
     }
 }
 

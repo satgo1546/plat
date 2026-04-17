@@ -89,13 +89,21 @@ fn emit_value<W: Write>(
                 koopa::ir::BinaryOp::Lt => todo!(),
                 koopa::ir::BinaryOp::Ge => todo!(),
                 koopa::ir::BinaryOp::Le => todo!(),
-                koopa::ir::BinaryOp::Add => todo!(),
+                koopa::ir::BinaryOp::Add => {
+                    writeln!(f, "add t1, t2, t1")?;
+                }
                 koopa::ir::BinaryOp::Sub => {
                     writeln!(f, "sub t1, t2, t1")?;
                 }
-                koopa::ir::BinaryOp::Mul => todo!(),
-                koopa::ir::BinaryOp::Div => todo!(),
-                koopa::ir::BinaryOp::Mod => todo!(),
+                koopa::ir::BinaryOp::Mul => {
+                    writeln!(f, "mul t1, t2, t1")?;
+                }
+                koopa::ir::BinaryOp::Div => {
+                    writeln!(f, "div t1, t2, t1")?;
+                }
+                koopa::ir::BinaryOp::Mod => {
+                    writeln!(f, "rem t1, t2, t1")?;
+                }
                 koopa::ir::BinaryOp::And => todo!(),
                 koopa::ir::BinaryOp::Or => todo!(),
                 koopa::ir::BinaryOp::Xor => {

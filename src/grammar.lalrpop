@@ -25,20 +25,37 @@ Expression: Box<Expression> = {
 };
 
 Term: Box<Expression> = {
+    Term TermOperator Factor => Box::new(Expression::Binary(<>)),
     Factor,
 };
 
+TermOperator: BinaryOperator = {
+    "+" => BinaryOperator::Plus,
+    "-" => BinaryOperator::Minus,
+}
+
 Factor: Box<Expression> = {
+    Factor FactorOperator Unary => Box::new(Expression::Binary(<>)),
     Unary,
 };
 
+FactorOperator: BinaryOperator = {
+    "*" => BinaryOperator::Multiply,
+    "/" => BinaryOperator::Divide,
+    "%" => BinaryOperator::Modulo,
+}
+
 Unary: Box<Expression> = {
-    "+" <Unary> => Box::new(Expression::Unary(UnaryOperator::Plus, <>)),
-    "-" <Unary> => Box::new(Expression::Unary(UnaryOperator::Minus, <>)),
-    "!" <Unary> => Box::new(Expression::Unary(UnaryOperator::BooleanNot, <>)),
-    "~" <Unary> => Box::new(Expression::Unary(UnaryOperator::BitNot, <>)),
+    UnaryOperator Unary => Box::new(Expression::Unary(<>)),
     Primary,
 };
+
+UnaryOperator: UnaryOperator = {
+    "+" => UnaryOperator::Plus,
+    "-" => UnaryOperator::Minus,
+    "!" => UnaryOperator::BooleanNot,
+    "~" => UnaryOperator::BitNot,
+}
 
 Primary: Box<Expression> = {
     Number => Box::new(Expression::Number(<>)),

@@ -28,6 +28,7 @@ pub struct Statement {
 pub enum Expression {
     Number(i32),
     Unary(UnaryOperator, Box<Expression>),
+    Binary(Box<Expression>, BinaryOperator, Box<Expression>),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -36,4 +37,13 @@ pub enum UnaryOperator {
     Minus,
     BooleanNot,
     BitNot,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum BinaryOperator {
+    Plus,
+    Minus,
+    Multiply,
+    Divide,
+    Modulo,
 }
