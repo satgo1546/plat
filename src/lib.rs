@@ -183,7 +183,7 @@ pub fn main() -> std::io::Result<()> {
     main_data.layout_mut().bbs_mut().extend([entry]);
     let mut insts = vec![];
     let mut scope = HashMap::new();
-    for statement in ast.function_definition.body.statements {
+    for statement in ast.function_definition.body {
         match statement {
             ast::Statement::Constant {
                 constant_type: ast::BasicType {},

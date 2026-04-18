@@ -16,7 +16,7 @@ FunctionDefinition: FunctionDefinition = <function_type: FunctionType> <name: Id
 
 FunctionType: FunctionType = "int" => FunctionType {};
 
-Block: Block = "{" <statement: BlockItem*> "}" => Block { statements: statement.concat() };
+Block: Vec<Statement> = "{" <statement: BlockItem*> "}" => statement.concat();
 
 BlockItem: Vec<Statement> = {
     Declaration,
