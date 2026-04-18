@@ -33,9 +33,12 @@ struct Args {
     output: Option<PathBuf>,
 }
 
-fn evaluate_expression(scope: &HashMap<String, i32>, expression: &ast::Expression) -> i32 {
+fn evaluate_expression(scope: &HashMap<String, ScopeItem>, expression: &ast::Expression) -> i32 {
     match expression {
-        ast::Expression::Variable(name) => scope[name],
+        ast::Expression::Variable(name) => match scope[name] {
+            ScopeItem::Constant(value) => value,
+            ScopeItem::Variable(_) => panic!("`{}` is a variable but used in const", name),
+        },
         ast::Expression::Number(x) => *x,
         ast::Expression::Unary(operator, expression) => {
             let x = evaluate_expression(scope, expression);
@@ -71,11 +74,18 @@ fn evaluate_expression(scope: &HashMap<String, i32>, expression: &ast::Expressio
 fn lower_expression(
     insts: &mut Vec<Value>,
     func_data: &mut FunctionData,
-    scope: &HashMap<String, i32>,
+    scope: &HashMap<String, ScopeItem>,
     expression: &ast::Expression,
 ) -> Value {
     match expression {
-        ast::Expression::Variable(name) => func_data.dfg_mut().new_value().integer(scope[name]),
+        ast::Expression::Variable(name) => match scope[name] {
+            ScopeItem::Constant(value) => func_data.dfg_mut().new_value().integer(value),
+            ScopeItem::Variable(value) => {
+                let value = func_data.dfg_mut().new_value().load(value);
+                insts.push(value);
+                value
+            }
+        },
         ast::Expression::Number(x) => func_data.dfg_mut().new_value().integer(*x),
         ast::Expression::Unary(operator, expression) => match operator {
             ast::UnaryOperator::Plus => lower_expression(insts, func_data, scope, expression),
@@ -148,6 +158,12 @@ fn lower_expression(
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+enum ScopeItem {
+    Constant(i32),
+    Variable(koopa::ir::Value),
+}
+
 pub fn main() -> std::io::Result<()> {
     let args = Args::parse();
     let input = std::fs::read_to_string(args.input)?;
@@ -174,7 +190,38 @@ pub fn main() -> std::io::Result<()> {
                 name,
                 value,
             } => {
-                scope.insert(name, evaluate_expression(&scope, &value));
+                scope.insert(
+                    name,
+                    ScopeItem::Constant(evaluate_expression(&scope, &value)),
+                );
+            }
+            ast::Statement::Variable {
+                variable_type: ast::BasicType {},
+                name,
+                value,
+            } => {
+                let alloc = main_data
+                    .dfg_mut()
+                    .new_value()
+                    .alloc(koopa::ir::Type::get_i32());
+                insts.push(alloc);
+                if let Some(value) = value {
+                    let value = lower_expression(&mut insts, main_data, &scope, &value);
+                    insts.push(main_data.dfg_mut().new_value().store(value, alloc));
+                }
+                scope.insert(name, ScopeItem::Variable(alloc));
+            }
+            ast::Statement::Assign { target, value } => {
+                let value = lower_expression(&mut insts, main_data, &scope, &value);
+                match *target {
+                    ast::Expression::Variable(name) => match scope[&name] {
+                        ScopeItem::Constant(_) => panic!("assign to constant"),
+                        ScopeItem::Variable(alloc) => {
+                            insts.push(main_data.dfg_mut().new_value().store(value, alloc))
+                        }
+                    },
+                    _ => panic!("invalid lvalue"),
+                }
             }
             ast::Statement::Return(expression) => {
                 let ret_value = lower_expression(&mut insts, main_data, &scope, &expression);

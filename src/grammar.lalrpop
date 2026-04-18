@@ -27,6 +27,7 @@ BasicType: BasicType = "int" => BasicType {};
 
 Declaration: Vec<Statement> = {
     ConstantDeclaration,
+    VariableDeclaration,
 };
 
 ConstantDeclaration: Vec<Statement> = "const" <constant_type: BasicType> <mut items: (<ConstantDefinition> ",")*> <last: ConstantDefinition> ";" => {
@@ -43,7 +44,24 @@ ConstantDeclaration: Vec<Statement> = "const" <constant_type: BasicType> <mut it
 
 ConstantDefinition: (String, Box<Expression>) = <Identifier> "=" <Expression> => (<>);
 
-Statement: Statement = "return" <x: Expression> ";" => Statement::Return(x);
+VariableDeclaration: Vec<Statement> = <variable_type: BasicType> <mut items: (<VariableDefinition> ",")*> <last: VariableDefinition> ";" => {
+    items.push(last);
+    items
+        .into_iter()
+        .map(|(name, value)| Statement::Variable {
+            variable_type: variable_type.clone(),
+            name,
+            value,
+        })
+        .collect()
+};
+
+VariableDefinition: (String, Option<Box<Expression>>) = Identifier ("=" <Expression>)? => (<>);
+
+Statement: Statement = {
+    <target: LValue> "=" <value: Expression> ";" => Statement::Assign {<>},
+    "return" <x: Expression> ";" => Statement::Return(x),
+};
 
 Expression: Box<Expression> = LogicOr;
 

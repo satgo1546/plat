@@ -29,6 +29,15 @@ pub enum Statement {
         name: String,
         value: Box<Expression>,
     },
+    Variable {
+        variable_type: BasicType,
+        name: String,
+        value: Option<Box<Expression>>,
+    },
+    Assign {
+        target: Box<Expression>,
+        value: Box<Expression>,
+    },
     Return(Box<Expression>),
 }
 

@@ -71,10 +71,16 @@ fn emit_value<W: Write>(
         koopa::ir::ValueKind::Aggregate(_) => todo!(),
         koopa::ir::ValueKind::FuncArgRef(_) => todo!(),
         koopa::ir::ValueKind::BlockArgRef(_) => todo!(),
-        koopa::ir::ValueKind::Alloc(_) => todo!(),
+        koopa::ir::ValueKind::Alloc(_) => Ok(()),
         koopa::ir::ValueKind::GlobalAlloc(_) => todo!(),
-        koopa::ir::ValueKind::Load(_) => todo!(),
-        koopa::ir::ValueKind::Store(_) => todo!(),
+        koopa::ir::ValueKind::Load(load) => {
+            stack_frame.load(f, dfg, "t1", load.src())?;
+            stack_frame.store(f, "t1", value)
+        }
+        koopa::ir::ValueKind::Store(store) => {
+            stack_frame.load(f, dfg, "t1", store.value())?;
+            stack_frame.store(f, "t1", store.dest())
+        }
         koopa::ir::ValueKind::GetPtr(_) => todo!(),
         koopa::ir::ValueKind::GetElemPtr(_) => todo!(),
         koopa::ir::ValueKind::Binary(binary) => {
