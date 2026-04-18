@@ -60,6 +60,9 @@ VariableDefinition: (String, Option<Box<Expression>>) = Identifier ("=" <Express
 
 Statement: Statement = {
     <target: LValue> "=" <value: Expression> ";" => Statement::Assign {<>},
+    <Expression> ";" => Statement::Expression(<>),
+    ";" => Statement::Block(vec![]),
+    <Block> => Statement::Block(<>),
     "return" <x: Expression> ";" => Statement::Return(x),
 };
 

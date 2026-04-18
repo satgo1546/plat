@@ -209,6 +209,15 @@ fn lower_statement(
                 _ => panic!("invalid lvalue"),
             }
         }
+        ast::Statement::Expression(expression) => {
+            lower_expression(insts, func_data, scope, expression);
+        }
+        ast::Statement::Block(statements) => {
+            let mut scope = scope.clone();
+            for statement in statements {
+                lower_statement(insts, func_data, &mut scope, statement);
+            }
+        }
         ast::Statement::Return(expression) => {
             let ret_value = lower_expression(insts, func_data, &scope, &expression);
             insts.push(func_data.dfg_mut().new_value().ret(Some(ret_value)));

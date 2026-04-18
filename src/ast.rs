@@ -33,6 +33,8 @@ pub enum Statement {
         target: Box<Expression>,
         value: Box<Expression>,
     },
+    Expression(Box<Expression>),
+    Block(Vec<Statement>),
     Return(Box<Expression>),
 }
 
