@@ -164,6 +164,58 @@ enum ScopeItem {
     Variable(koopa::ir::Value),
 }
 
+fn lower_statement(
+    insts: &mut Vec<Value>,
+    func_data: &mut FunctionData,
+    scope: &mut HashMap<String, ScopeItem>,
+    statement: &ast::Statement,
+) -> () {
+    match statement {
+        ast::Statement::Constant {
+            constant_type: ast::BasicType {},
+            name,
+            value,
+        } => {
+            scope.insert(
+                name.clone(),
+                ScopeItem::Constant(evaluate_expression(&scope, &value)),
+            );
+        }
+        ast::Statement::Variable {
+            variable_type: ast::BasicType {},
+            name,
+            value,
+        } => {
+            let alloc = func_data
+                .dfg_mut()
+                .new_value()
+                .alloc(koopa::ir::Type::get_i32());
+            insts.push(alloc);
+            if let Some(value) = value {
+                let value = lower_expression(insts, func_data, &scope, &value);
+                insts.push(func_data.dfg_mut().new_value().store(value, alloc));
+            }
+            scope.insert(name.clone(), ScopeItem::Variable(alloc));
+        }
+        ast::Statement::Assign { target, value } => {
+            let value = lower_expression(insts, func_data, &scope, &value);
+            match &**target {
+                ast::Expression::Variable(name) => match scope[name] {
+                    ScopeItem::Constant(_) => panic!("assign to constant"),
+                    ScopeItem::Variable(alloc) => {
+                        insts.push(func_data.dfg_mut().new_value().store(value, alloc))
+                    }
+                },
+                _ => panic!("invalid lvalue"),
+            }
+        }
+        ast::Statement::Return(expression) => {
+            let ret_value = lower_expression(insts, func_data, &scope, &expression);
+            insts.push(func_data.dfg_mut().new_value().ret(Some(ret_value)));
+        }
+    }
+}
+
 pub fn main() -> std::io::Result<()> {
     let args = Args::parse();
     let input = std::fs::read_to_string(args.input)?;
@@ -183,51 +235,8 @@ pub fn main() -> std::io::Result<()> {
     main_data.layout_mut().bbs_mut().extend([entry]);
     let mut insts = vec![];
     let mut scope = HashMap::new();
-    for statement in ast.function_definition.body {
-        match statement {
-            ast::Statement::Constant {
-                constant_type: ast::BasicType {},
-                name,
-                value,
-            } => {
-                scope.insert(
-                    name,
-                    ScopeItem::Constant(evaluate_expression(&scope, &value)),
-                );
-            }
-            ast::Statement::Variable {
-                variable_type: ast::BasicType {},
-                name,
-                value,
-            } => {
-                let alloc = main_data
-                    .dfg_mut()
-                    .new_value()
-                    .alloc(koopa::ir::Type::get_i32());
-                insts.push(alloc);
-                if let Some(value) = value {
-                    let value = lower_expression(&mut insts, main_data, &scope, &value);
-                    insts.push(main_data.dfg_mut().new_value().store(value, alloc));
-                }
-                scope.insert(name, ScopeItem::Variable(alloc));
-            }
-            ast::Statement::Assign { target, value } => {
-                let value = lower_expression(&mut insts, main_data, &scope, &value);
-                match *target {
-                    ast::Expression::Variable(name) => match scope[&name] {
-                        ScopeItem::Constant(_) => panic!("assign to constant"),
-                        ScopeItem::Variable(alloc) => {
-                            insts.push(main_data.dfg_mut().new_value().store(value, alloc))
-                        }
-                    },
-                    _ => panic!("invalid lvalue"),
-                }
-            }
-            ast::Statement::Return(expression) => {
-                let ret_value = lower_expression(&mut insts, main_data, &scope, &expression);
-                insts.push(main_data.dfg_mut().new_value().ret(Some(ret_value)));
-            }
-        }
+    for statement in &ast.function_definition.body {
+        lower_statement(&mut insts, main_data, &mut scope, statement);
     }
     main_data
         .layout_mut()
