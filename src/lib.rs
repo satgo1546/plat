@@ -33,7 +33,22 @@ struct Args {
     output: Option<PathBuf>,
 }
 
+fn new_bb(func_data: &mut FunctionData) -> BasicBlock {
+    let name = format!(
+        "%{}__bb{}",
+        &func_data.name()[1..],
+        func_data.dfg().bbs().len()
+    );
+    func_data.dfg_mut().new_bb().basic_block(Some(name))
+}
+
 fn push_inst(func_data: &mut FunctionData, bb: BasicBlock, inst: Value) {
+    if let Some(&last_value) = func_data.layout_mut().bb_mut(bb).insts().back_key()
+        && let ir::ValueKind::Branch(_) | ir::ValueKind::Jump(_) | ir::ValueKind::Return(_) =
+            func_data.dfg().value(last_value).kind()
+    {
+        return;
+    }
     func_data
         .layout_mut()
         .bb_mut(bb)
@@ -228,6 +243,41 @@ fn lower_statement(
             for statement in statements {
                 lower_statement(func_data, bb, &mut scope, statement);
             }
+        }
+        ast::Statement::If {
+            condition,
+            then,
+            otherwise,
+        } => {
+            let mut then_bb = new_bb(func_data);
+            let mut else_bb = new_bb(func_data);
+            let end_bb = new_bb(func_data);
+            func_data
+                .layout_mut()
+                .bbs_mut()
+                .extend([then_bb, else_bb, end_bb]);
+            let condition = lower_expression(func_data, bb, scope, condition);
+            let branch = func_data
+                .dfg_mut()
+                .new_value()
+                .branch(condition, then_bb, else_bb);
+            push_inst(func_data, *bb, branch);
+            lower_statement(func_data, &mut then_bb, scope, then);
+            if let Some(otherwise) = otherwise {
+                lower_statement(func_data, &mut else_bb, scope, otherwise);
+            }
+            if let Some(&x) = func_data
+                .layout_mut()
+                .bb_mut(then_bb)
+                .insts_mut()
+                .back_key()
+            {
+                func_data.dfg().value(x).ty();
+            }
+            let jump = func_data.dfg_mut().new_value().jump(end_bb);
+            push_inst(func_data, then_bb, jump);
+            push_inst(func_data, else_bb, jump);
+            *bb = end_bb;
         }
         ast::Statement::Return(expression) => {
             let ret_value = lower_expression(func_data, bb, &scope, &expression);

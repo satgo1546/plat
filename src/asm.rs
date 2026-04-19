@@ -40,17 +40,23 @@ impl StackFrame {
 }
 
 fn emit_function<W: Write>(f: &mut W, func_data: &koopa::ir::FunctionData) -> std::io::Result<()> {
-    writeln!(f, "{}:", &func_data.name()[1..])?;
-    for (i, (_, node)) in func_data.layout().bbs().iter().enumerate() {
-        writeln!(f, "{}__{}:", &func_data.name()[1..], i)?;
-        let mut stack_frame = StackFrame::default();
+    let mut stack_frame = StackFrame::default();
+    for (_, node) in func_data.layout().bbs() {
         for &inst in node.insts().keys() {
             if !func_data.dfg().value(inst).ty().is_unit() {
                 stack_frame.offset += 4;
                 stack_frame.map.insert(inst, -stack_frame.offset);
             }
         }
-        writeln!(f, "addi sp, sp, {}", -stack_frame.offset)?;
+    }
+    writeln!(f, "{}:", &func_data.name()[1..])?;
+    writeln!(f, "addi sp, sp, {}", -stack_frame.offset)?;
+    for (&bb, node) in func_data.layout().bbs() {
+        writeln!(
+            f,
+            "{}:",
+            &func_data.dfg().bb(bb).name().as_ref().unwrap()[1..]
+        )?;
         for &inst in node.insts().keys() {
             emit_value(f, func_data.dfg(), &stack_frame, inst)?;
         }
@@ -141,8 +147,22 @@ fn emit_value<W: Write>(
             }
             stack_frame.store(f, "t1", value)
         }
-        koopa::ir::ValueKind::Branch(_) => todo!(),
-        koopa::ir::ValueKind::Jump(_) => todo!(),
+        koopa::ir::ValueKind::Branch(branch) => {
+            stack_frame.load(f, dfg, "t1", branch.cond())?;
+            writeln!(
+                f,
+                "bnez t1, {}\nj {}",
+                &dfg.bb(branch.true_bb()).name().as_ref().unwrap()[1..],
+                &dfg.bb(branch.false_bb()).name().as_ref().unwrap()[1..],
+            )
+        }
+        koopa::ir::ValueKind::Jump(jump) => {
+            writeln!(
+                f,
+                "j {}",
+                &dfg.bb(jump.target()).name().as_ref().unwrap()[1..]
+            )
+        }
         koopa::ir::ValueKind::Call(_) => todo!(),
         koopa::ir::ValueKind::Return(ret) => {
             if let Some(value) = ret.value() {

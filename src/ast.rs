@@ -35,6 +35,11 @@ pub enum Statement {
     },
     Expression(Box<Expression>),
     Block(Vec<Statement>),
+    If {
+        condition: Box<Expression>,
+        then: Box<Statement>,
+        otherwise: Option<Box<Statement>>,
+    },
     Return(Box<Expression>),
 }
 

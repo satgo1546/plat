@@ -59,10 +59,21 @@ VariableDeclaration: Vec<Statement> = <variable_type: BasicType> <mut items: (<V
 VariableDefinition: (String, Option<Box<Expression>>) = Identifier ("=" <Expression>)? => (<>);
 
 Statement: Statement = {
+    OpenStatement,
+    ClosedStatement,
+};
+
+OpenStatement: Statement = {
+    "if" "(" <condition: Expression> ")" <then: Statement> => Statement::If { condition, then: Box::new(then), otherwise: None },
+    "if" "(" <condition: Expression> ")" <then: ClosedStatement> "else" <otherwise: OpenStatement> => Statement::If { condition, then: Box::new(then), otherwise: Some(Box::new(otherwise)) },
+};
+
+ClosedStatement: Statement = {
     <target: LValue> "=" <value: Expression> ";" => Statement::Assign {<>},
     <Expression> ";" => Statement::Expression(<>),
     ";" => Statement::Block(vec![]),
     <Block> => Statement::Block(<>),
+    "if" "(" <condition: Expression> ")" <then: ClosedStatement> "else" <otherwise: ClosedStatement> => Statement::If { condition, then: Box::new(then), otherwise: Some(Box::new(otherwise)) },
     "return" <x: Expression> ";" => Statement::Return(x),
 };
 
