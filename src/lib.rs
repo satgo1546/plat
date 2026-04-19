@@ -33,6 +33,15 @@ struct Args {
     output: Option<PathBuf>,
 }
 
+fn push_inst(func_data: &mut FunctionData, bb: BasicBlock, inst: Value) {
+    func_data
+        .layout_mut()
+        .bb_mut(bb)
+        .insts_mut()
+        .push_key_back(inst)
+        .unwrap();
+}
+
 fn evaluate_expression(scope: &HashMap<String, ScopeItem>, expression: &ast::Expression) -> i32 {
     match expression {
         ast::Expression::Variable(name) => match scope[name] {
@@ -82,12 +91,7 @@ fn lower_expression(
             ScopeItem::Constant(value) => func_data.dfg_mut().new_value().integer(value),
             ScopeItem::Variable(value) => {
                 let value = func_data.dfg_mut().new_value().load(value);
-                func_data
-                    .layout_mut()
-                    .bb_mut(*bb)
-                    .insts_mut()
-                    .push_key_back(value)
-                    .unwrap();
+                push_inst(func_data, *bb, value);
                 value
             }
         },
@@ -101,12 +105,7 @@ fn lower_expression(
                     .dfg_mut()
                     .new_value()
                     .binary(ir::BinaryOp::Sub, zero, x);
-                func_data
-                    .layout_mut()
-                    .bb_mut(*bb)
-                    .insts_mut()
-                    .push_key_back(value)
-                    .unwrap();
+                push_inst(func_data, *bb, value);
                 value
             }
             ast::UnaryOperator::BooleanNot => {
@@ -116,12 +115,7 @@ fn lower_expression(
                     .dfg_mut()
                     .new_value()
                     .binary(ir::BinaryOp::Eq, zero, x);
-                func_data
-                    .layout_mut()
-                    .bb_mut(*bb)
-                    .insts_mut()
-                    .push_key_back(value)
-                    .unwrap();
+                push_inst(func_data, *bb, value);
                 value
             }
             ast::UnaryOperator::BitNot => {
@@ -131,12 +125,7 @@ fn lower_expression(
                     .dfg_mut()
                     .new_value()
                     .binary(ir::BinaryOp::Xor, minus1, x);
-                func_data
-                    .layout_mut()
-                    .bb_mut(*bb)
-                    .insts_mut()
-                    .push_key_back(value)
-                    .unwrap();
+                push_inst(func_data, *bb, value);
                 value
             }
         },
@@ -153,18 +142,8 @@ fn lower_expression(
                     .dfg_mut()
                     .new_value()
                     .binary(ir::BinaryOp::NotEq, zero, b);
-                func_data
-                    .layout_mut()
-                    .bb_mut(*bb)
-                    .insts_mut()
-                    .push_key_back(a)
-                    .unwrap();
-                func_data
-                    .layout_mut()
-                    .bb_mut(*bb)
-                    .insts_mut()
-                    .push_key_back(b)
-                    .unwrap();
+                push_inst(func_data, *bb, a);
+                push_inst(func_data, *bb, b);
             }
             let operator = match operator {
                 ast::BinaryOperator::Plus => ir::BinaryOp::Add,
@@ -182,12 +161,7 @@ fn lower_expression(
                 ast::BinaryOperator::BooleanOr => ir::BinaryOp::Or,
             };
             let value = func_data.dfg_mut().new_value().binary(operator, a, b);
-            func_data
-                .layout_mut()
-                .bb_mut(*bb)
-                .insts_mut()
-                .push_key_back(value)
-                .unwrap();
+            push_inst(func_data, *bb, value);
             value
         }
     }
@@ -225,21 +199,11 @@ fn lower_statement(
                 .dfg_mut()
                 .new_value()
                 .alloc(koopa::ir::Type::get_i32());
-            func_data
-                .layout_mut()
-                .bb_mut(*bb)
-                .insts_mut()
-                .push_key_back(alloc)
-                .unwrap();
+            push_inst(func_data, *bb, alloc);
             if let Some(value) = value {
                 let value = lower_expression(func_data, bb, &scope, &value);
                 let store = func_data.dfg_mut().new_value().store(value, alloc);
-                func_data
-                    .layout_mut()
-                    .bb_mut(*bb)
-                    .insts_mut()
-                    .push_key_back(store)
-                    .unwrap();
+                push_inst(func_data, *bb, store);
             }
             scope.insert(name.clone(), ScopeItem::Variable(alloc));
         }
@@ -250,12 +214,7 @@ fn lower_statement(
                     ScopeItem::Constant(_) => panic!("assign to constant"),
                     ScopeItem::Variable(alloc) => {
                         let store = func_data.dfg_mut().new_value().store(value, alloc);
-                        func_data
-                            .layout_mut()
-                            .bb_mut(*bb)
-                            .insts_mut()
-                            .push_key_back(store)
-                            .unwrap();
+                        push_inst(func_data, *bb, store);
                     }
                 },
                 _ => panic!("invalid lvalue"),
@@ -273,12 +232,7 @@ fn lower_statement(
         ast::Statement::Return(expression) => {
             let ret_value = lower_expression(func_data, bb, &scope, &expression);
             let ret = func_data.dfg_mut().new_value().ret(Some(ret_value));
-            func_data
-                .layout_mut()
-                .bb_mut(*bb)
-                .insts_mut()
-                .push_key_back(ret)
-                .unwrap();
+            push_inst(func_data, *bb, ret);
         }
     }
 }
