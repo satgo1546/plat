@@ -2,7 +2,7 @@ use clap::Parser;
 use koopa::{
     back::KoopaGenerator,
     ir::{
-        self, FunctionData, Value,
+        self, BasicBlock, FunctionData, Value,
         builder::{BasicBlockBuilder, LocalInstBuilder, ValueBuilder},
     },
 };
@@ -72,8 +72,8 @@ fn evaluate_expression(scope: &HashMap<String, ScopeItem>, expression: &ast::Exp
 }
 
 fn lower_expression(
-    insts: &mut Vec<Value>,
     func_data: &mut FunctionData,
+    bb: &mut BasicBlock,
     scope: &HashMap<String, ScopeItem>,
     expression: &ast::Expression,
 ) -> Value {
@@ -82,47 +82,67 @@ fn lower_expression(
             ScopeItem::Constant(value) => func_data.dfg_mut().new_value().integer(value),
             ScopeItem::Variable(value) => {
                 let value = func_data.dfg_mut().new_value().load(value);
-                insts.push(value);
+                func_data
+                    .layout_mut()
+                    .bb_mut(*bb)
+                    .insts_mut()
+                    .push_key_back(value)
+                    .unwrap();
                 value
             }
         },
         ast::Expression::Number(x) => func_data.dfg_mut().new_value().integer(*x),
         ast::Expression::Unary(operator, expression) => match operator {
-            ast::UnaryOperator::Plus => lower_expression(insts, func_data, scope, expression),
+            ast::UnaryOperator::Plus => lower_expression(func_data, bb, scope, expression),
             ast::UnaryOperator::Minus => {
                 let zero = func_data.dfg_mut().new_value().integer(0);
-                let x = lower_expression(insts, func_data, scope, expression);
+                let x = lower_expression(func_data, bb, scope, expression);
                 let value = func_data
                     .dfg_mut()
                     .new_value()
                     .binary(ir::BinaryOp::Sub, zero, x);
-                insts.push(value);
+                func_data
+                    .layout_mut()
+                    .bb_mut(*bb)
+                    .insts_mut()
+                    .push_key_back(value)
+                    .unwrap();
                 value
             }
             ast::UnaryOperator::BooleanNot => {
                 let zero = func_data.dfg_mut().new_value().integer(0);
-                let x = lower_expression(insts, func_data, scope, expression);
+                let x = lower_expression(func_data, bb, scope, expression);
                 let value = func_data
                     .dfg_mut()
                     .new_value()
                     .binary(ir::BinaryOp::Eq, zero, x);
-                insts.push(value);
+                func_data
+                    .layout_mut()
+                    .bb_mut(*bb)
+                    .insts_mut()
+                    .push_key_back(value)
+                    .unwrap();
                 value
             }
             ast::UnaryOperator::BitNot => {
                 let minus1 = func_data.dfg_mut().new_value().integer(-1);
-                let x = lower_expression(insts, func_data, scope, expression);
+                let x = lower_expression(func_data, bb, scope, expression);
                 let value = func_data
                     .dfg_mut()
                     .new_value()
                     .binary(ir::BinaryOp::Xor, minus1, x);
-                insts.push(value);
+                func_data
+                    .layout_mut()
+                    .bb_mut(*bb)
+                    .insts_mut()
+                    .push_key_back(value)
+                    .unwrap();
                 value
             }
         },
         ast::Expression::Binary(a, operator, b) => {
-            let mut a = lower_expression(insts, func_data, scope, a);
-            let mut b = lower_expression(insts, func_data, scope, b);
+            let mut a = lower_expression(func_data, bb, scope, a);
+            let mut b = lower_expression(func_data, bb, scope, b);
             if let ast::BinaryOperator::BooleanAnd | ast::BinaryOperator::BooleanOr = operator {
                 let zero = func_data.dfg_mut().new_value().integer(0);
                 a = func_data
@@ -133,8 +153,18 @@ fn lower_expression(
                     .dfg_mut()
                     .new_value()
                     .binary(ir::BinaryOp::NotEq, zero, b);
-                insts.push(a);
-                insts.push(b);
+                func_data
+                    .layout_mut()
+                    .bb_mut(*bb)
+                    .insts_mut()
+                    .push_key_back(a)
+                    .unwrap();
+                func_data
+                    .layout_mut()
+                    .bb_mut(*bb)
+                    .insts_mut()
+                    .push_key_back(b)
+                    .unwrap();
             }
             let operator = match operator {
                 ast::BinaryOperator::Plus => ir::BinaryOp::Add,
@@ -152,7 +182,12 @@ fn lower_expression(
                 ast::BinaryOperator::BooleanOr => ir::BinaryOp::Or,
             };
             let value = func_data.dfg_mut().new_value().binary(operator, a, b);
-            insts.push(value);
+            func_data
+                .layout_mut()
+                .bb_mut(*bb)
+                .insts_mut()
+                .push_key_back(value)
+                .unwrap();
             value
         }
     }
@@ -165,8 +200,8 @@ enum ScopeItem {
 }
 
 fn lower_statement(
-    insts: &mut Vec<Value>,
     func_data: &mut FunctionData,
+    bb: &mut BasicBlock,
     scope: &mut HashMap<String, ScopeItem>,
     statement: &ast::Statement,
 ) -> () {
@@ -190,37 +225,60 @@ fn lower_statement(
                 .dfg_mut()
                 .new_value()
                 .alloc(koopa::ir::Type::get_i32());
-            insts.push(alloc);
+            func_data
+                .layout_mut()
+                .bb_mut(*bb)
+                .insts_mut()
+                .push_key_back(alloc)
+                .unwrap();
             if let Some(value) = value {
-                let value = lower_expression(insts, func_data, &scope, &value);
-                insts.push(func_data.dfg_mut().new_value().store(value, alloc));
+                let value = lower_expression(func_data, bb, &scope, &value);
+                let store = func_data.dfg_mut().new_value().store(value, alloc);
+                func_data
+                    .layout_mut()
+                    .bb_mut(*bb)
+                    .insts_mut()
+                    .push_key_back(store)
+                    .unwrap();
             }
             scope.insert(name.clone(), ScopeItem::Variable(alloc));
         }
         ast::Statement::Assign { target, value } => {
-            let value = lower_expression(insts, func_data, &scope, &value);
+            let value = lower_expression(func_data, bb, &scope, &value);
             match &**target {
                 ast::Expression::Variable(name) => match scope[name] {
                     ScopeItem::Constant(_) => panic!("assign to constant"),
                     ScopeItem::Variable(alloc) => {
-                        insts.push(func_data.dfg_mut().new_value().store(value, alloc))
+                        let store = func_data.dfg_mut().new_value().store(value, alloc);
+                        func_data
+                            .layout_mut()
+                            .bb_mut(*bb)
+                            .insts_mut()
+                            .push_key_back(store)
+                            .unwrap();
                     }
                 },
                 _ => panic!("invalid lvalue"),
             }
         }
         ast::Statement::Expression(expression) => {
-            lower_expression(insts, func_data, scope, expression);
+            lower_expression(func_data, bb, scope, expression);
         }
         ast::Statement::Block(statements) => {
             let mut scope = scope.clone();
             for statement in statements {
-                lower_statement(insts, func_data, &mut scope, statement);
+                lower_statement(func_data, bb, &mut scope, statement);
             }
         }
         ast::Statement::Return(expression) => {
-            let ret_value = lower_expression(insts, func_data, &scope, &expression);
-            insts.push(func_data.dfg_mut().new_value().ret(Some(ret_value)));
+            let ret_value = lower_expression(func_data, bb, &scope, &expression);
+            let ret = func_data.dfg_mut().new_value().ret(Some(ret_value));
+            func_data
+                .layout_mut()
+                .bb_mut(*bb)
+                .insts_mut()
+                .push_key_back(ret)
+                .unwrap();
         }
     }
 }
@@ -237,21 +295,15 @@ pub fn main() -> std::io::Result<()> {
         ir::Type::get_i32(),
     );
     let main_data = program.func_mut(main);
-    let entry = main_data
+    let mut bb = main_data
         .dfg_mut()
         .new_bb()
         .basic_block(Some("%entry".into()));
-    main_data.layout_mut().bbs_mut().extend([entry]);
-    let mut insts = vec![];
+    main_data.layout_mut().bbs_mut().push_key_back(bb).unwrap();
     let mut scope = HashMap::new();
     for statement in &ast.function_definition.body {
-        lower_statement(&mut insts, main_data, &mut scope, statement);
+        lower_statement(main_data, &mut bb, &mut scope, statement);
     }
-    main_data
-        .layout_mut()
-        .bb_mut(entry)
-        .insts_mut()
-        .extend(insts);
 
     let mut output = Vec::<u8>::new();
     match args.mode {
