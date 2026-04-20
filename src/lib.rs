@@ -39,10 +39,12 @@ fn new_bb(func_data: &mut FunctionData, params: usize) -> BasicBlock {
         &func_data.name()[1..],
         func_data.dfg().bbs().len()
     );
-    func_data
+    let bb = func_data
         .dfg_mut()
         .new_bb()
-        .basic_block_with_params(Some(name), vec![koopa::ir::Type::get_i32(); params])
+        .basic_block_with_params(Some(name), vec![koopa::ir::Type::get_i32(); params]);
+    func_data.layout_mut().bbs_mut().push_key_back(bb).unwrap();
+    bb
 }
 
 fn push_inst(func_data: &mut FunctionData, bb: BasicBlock, inst: Value) {
@@ -165,10 +167,6 @@ fn lower_expression(
                     let then_bb = new_bb(func_data, 0);
                     let else_bb = new_bb(func_data, 0);
                     let end_bb = new_bb(func_data, 1);
-                    func_data
-                        .layout_mut()
-                        .bbs_mut()
-                        .extend([then_bb, else_bb, end_bb]);
                     let branch = func_data.dfg_mut().new_value().branch(a, then_bb, else_bb);
                     push_inst(func_data, *bb, branch);
 
@@ -200,10 +198,6 @@ fn lower_expression(
                     let then_bb = new_bb(func_data, 0);
                     let else_bb = new_bb(func_data, 0);
                     let end_bb = new_bb(func_data, 1);
-                    func_data
-                        .layout_mut()
-                        .bbs_mut()
-                        .extend([then_bb, else_bb, end_bb]);
                     let branch = func_data.dfg_mut().new_value().branch(a, then_bb, else_bb);
                     push_inst(func_data, *bb, branch);
 
@@ -317,10 +311,6 @@ fn lower_statement(
             let mut then_bb = new_bb(func_data, 0);
             let mut else_bb = new_bb(func_data, 0);
             let end_bb = new_bb(func_data, 0);
-            func_data
-                .layout_mut()
-                .bbs_mut()
-                .extend([then_bb, else_bb, end_bb]);
             let condition = lower_expression(func_data, bb, scope, condition);
             let branch = func_data
                 .dfg_mut()
@@ -348,10 +338,6 @@ fn lower_statement(
             let condition_bb = new_bb(func_data, 0);
             let body_bb = new_bb(func_data, 0);
             let end_bb = new_bb(func_data, 0);
-            func_data
-                .layout_mut()
-                .bbs_mut()
-                .extend([condition_bb, body_bb, end_bb]);
             let jump = func_data.dfg_mut().new_value().jump(condition_bb);
             push_inst(func_data, *bb, jump);
 
