@@ -3,7 +3,7 @@ use koopa::{
     back::KoopaGenerator,
     ir::{
         self, BasicBlock, FunctionData, Value,
-        builder::{BasicBlockBuilder, LocalInstBuilder, ValueBuilder},
+        builder::{BasicBlockBuilder, EntityInfoQuerier, LocalInstBuilder, ValueBuilder},
     },
 };
 use lalrpop_util::lalrpop_mod;
@@ -33,13 +33,16 @@ struct Args {
     output: Option<PathBuf>,
 }
 
-fn new_bb(func_data: &mut FunctionData) -> BasicBlock {
+fn new_bb(func_data: &mut FunctionData, params: usize) -> BasicBlock {
     let name = format!(
         "%{}__bb{}",
         &func_data.name()[1..],
         func_data.dfg().bbs().len()
     );
-    func_data.dfg_mut().new_bb().basic_block(Some(name))
+    func_data
+        .dfg_mut()
+        .new_bb()
+        .basic_block_with_params(Some(name), vec![koopa::ir::Type::get_i32(); params])
 }
 
 fn push_inst(func_data: &mut FunctionData, bb: BasicBlock, inst: Value) {
@@ -145,21 +148,7 @@ fn lower_expression(
             }
         },
         ast::Expression::Binary(a, operator, b) => {
-            let mut a = lower_expression(func_data, bb, scope, a);
-            let mut b = lower_expression(func_data, bb, scope, b);
-            if let ast::BinaryOperator::BooleanAnd | ast::BinaryOperator::BooleanOr = operator {
-                let zero = func_data.dfg_mut().new_value().integer(0);
-                a = func_data
-                    .dfg_mut()
-                    .new_value()
-                    .binary(ir::BinaryOp::NotEq, zero, a);
-                b = func_data
-                    .dfg_mut()
-                    .new_value()
-                    .binary(ir::BinaryOp::NotEq, zero, b);
-                push_inst(func_data, *bb, a);
-                push_inst(func_data, *bb, b);
-            }
+            let a = lower_expression(func_data, bb, scope, a);
             let operator = match operator {
                 ast::BinaryOperator::Plus => ir::BinaryOp::Add,
                 ast::BinaryOperator::Minus => ir::BinaryOp::Sub,
@@ -172,9 +161,79 @@ fn lower_expression(
                 ast::BinaryOperator::GreaterEqual => ir::BinaryOp::Ge,
                 ast::BinaryOperator::Equal => ir::BinaryOp::Eq,
                 ast::BinaryOperator::NotEqual => ir::BinaryOp::NotEq,
-                ast::BinaryOperator::BooleanAnd => ir::BinaryOp::And,
-                ast::BinaryOperator::BooleanOr => ir::BinaryOp::Or,
+                ast::BinaryOperator::BooleanAnd => {
+                    let then_bb = new_bb(func_data, 0);
+                    let else_bb = new_bb(func_data, 0);
+                    let end_bb = new_bb(func_data, 1);
+                    func_data
+                        .layout_mut()
+                        .bbs_mut()
+                        .extend([then_bb, else_bb, end_bb]);
+                    let branch = func_data.dfg_mut().new_value().branch(a, then_bb, else_bb);
+                    push_inst(func_data, *bb, branch);
+
+                    *bb = then_bb;
+                    let zero = func_data.dfg_mut().new_value().integer(0);
+                    let b = lower_expression(func_data, bb, scope, b);
+                    let b = func_data
+                        .dfg_mut()
+                        .new_value()
+                        .binary(ir::BinaryOp::NotEq, zero, b);
+                    push_inst(func_data, *bb, b);
+                    let jump = func_data
+                        .dfg_mut()
+                        .new_value()
+                        .jump_with_args(end_bb, vec![b]);
+                    push_inst(func_data, *bb, jump);
+
+                    *bb = else_bb;
+                    let jump = func_data
+                        .dfg_mut()
+                        .new_value()
+                        .jump_with_args(end_bb, vec![zero]);
+                    push_inst(func_data, *bb, jump);
+
+                    *bb = end_bb;
+                    return func_data.dfg_mut().new_value().bb_params(*bb)[0];
+                }
+                ast::BinaryOperator::BooleanOr => {
+                    let then_bb = new_bb(func_data, 0);
+                    let else_bb = new_bb(func_data, 0);
+                    let end_bb = new_bb(func_data, 1);
+                    func_data
+                        .layout_mut()
+                        .bbs_mut()
+                        .extend([then_bb, else_bb, end_bb]);
+                    let branch = func_data.dfg_mut().new_value().branch(a, then_bb, else_bb);
+                    push_inst(func_data, *bb, branch);
+
+                    *bb = then_bb;
+                    let one = func_data.dfg_mut().new_value().integer(1);
+                    let jump = func_data
+                        .dfg_mut()
+                        .new_value()
+                        .jump_with_args(end_bb, vec![one]);
+                    push_inst(func_data, *bb, jump);
+
+                    *bb = else_bb;
+                    let zero = func_data.dfg_mut().new_value().integer(0);
+                    let b = lower_expression(func_data, bb, scope, b);
+                    let b = func_data
+                        .dfg_mut()
+                        .new_value()
+                        .binary(ir::BinaryOp::NotEq, zero, b);
+                    push_inst(func_data, *bb, b);
+                    let jump = func_data
+                        .dfg_mut()
+                        .new_value()
+                        .jump_with_args(end_bb, vec![b]);
+                    push_inst(func_data, *bb, jump);
+
+                    *bb = end_bb;
+                    return func_data.dfg_mut().new_value().bb_params(*bb)[0];
+                }
             };
+            let b = lower_expression(func_data, bb, scope, b);
             let value = func_data.dfg_mut().new_value().binary(operator, a, b);
             push_inst(func_data, *bb, value);
             value
@@ -249,9 +308,9 @@ fn lower_statement(
             then,
             otherwise,
         } => {
-            let mut then_bb = new_bb(func_data);
-            let mut else_bb = new_bb(func_data);
-            let end_bb = new_bb(func_data);
+            let mut then_bb = new_bb(func_data, 0);
+            let mut else_bb = new_bb(func_data, 0);
+            let end_bb = new_bb(func_data, 0);
             func_data
                 .layout_mut()
                 .bbs_mut()

@@ -22,10 +22,14 @@ impl StackFrame {
         register: &str,
         value: koopa::ir::Value,
     ) -> std::io::Result<()> {
-        if let koopa::ir::ValueKind::Integer(integer) = dfg.value(value).kind() {
-            writeln!(f, "li {}, {}", register, integer.value())
-        } else {
-            writeln!(f, "lw {}, {}(sp)", register, self.map[&value] + self.offset)
+        match dfg.value(value).kind() {
+            koopa::ir::ValueKind::Integer(integer) => {
+                writeln!(f, "li {}, {}", register, integer.value())
+            }
+            koopa::ir::ValueKind::BlockArgRef(arg) => {
+                writeln!(f, "mv {}, a{}", register, arg.index())
+            }
+            _ => writeln!(f, "lw {}, {}(sp)", register, self.map[&value] + self.offset),
         }
     }
 
@@ -76,7 +80,7 @@ fn emit_value<W: Write>(
         koopa::ir::ValueKind::Undef(_) => todo!(),
         koopa::ir::ValueKind::Aggregate(_) => todo!(),
         koopa::ir::ValueKind::FuncArgRef(_) => todo!(),
-        koopa::ir::ValueKind::BlockArgRef(_) => todo!(),
+        koopa::ir::ValueKind::BlockArgRef(_) => panic!("how did you do that?"),
         koopa::ir::ValueKind::Alloc(_) => Ok(()),
         koopa::ir::ValueKind::GlobalAlloc(_) => todo!(),
         koopa::ir::ValueKind::Load(load) => {
@@ -157,6 +161,9 @@ fn emit_value<W: Write>(
             )
         }
         koopa::ir::ValueKind::Jump(jump) => {
+            for (i, &arg) in jump.args().iter().enumerate() {
+                stack_frame.load(f, dfg, &format!("a{}", i), arg)?;
+            }
             writeln!(
                 f,
                 "j {}",
