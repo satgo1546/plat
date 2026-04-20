@@ -338,6 +338,31 @@ fn lower_statement(
             push_inst(func_data, else_bb, jump);
             *bb = end_bb;
         }
+        ast::Statement::While { condition, body } => {
+            let condition_bb = new_bb(func_data, 0);
+            let body_bb = new_bb(func_data, 0);
+            let end_bb = new_bb(func_data, 0);
+            func_data
+                .layout_mut()
+                .bbs_mut()
+                .extend([condition_bb, body_bb, end_bb]);
+            let jump = func_data.dfg_mut().new_value().jump(condition_bb);
+            push_inst(func_data, *bb, jump);
+
+            *bb = condition_bb;
+            let condition = lower_expression(func_data, bb, scope, condition);
+            let branch = func_data
+                .dfg_mut()
+                .new_value()
+                .branch(condition, body_bb, end_bb);
+            push_inst(func_data, *bb, branch);
+
+            *bb = body_bb;
+            lower_statement(func_data, bb, scope, body);
+            push_inst(func_data, *bb, jump);
+
+            *bb = end_bb;
+        }
         ast::Statement::Return(expression) => {
             let ret_value = lower_expression(func_data, bb, &scope, &expression);
             let ret = func_data.dfg_mut().new_value().ret(Some(ret_value));

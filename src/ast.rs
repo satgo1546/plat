@@ -40,6 +40,10 @@ pub enum Statement {
         then: Box<Statement>,
         otherwise: Option<Box<Statement>>,
     },
+    While {
+        condition: Box<Expression>,
+        body: Box<Statement>,
+    },
     Return(Box<Expression>),
 }
 
