@@ -247,10 +247,16 @@ enum ScopeItem {
     Variable(koopa::ir::Value),
 }
 
+struct LoopInfo {
+    entry: BasicBlock,
+    end: BasicBlock,
+}
+
 fn lower_statement(
     func_data: &mut FunctionData,
     bb: &mut BasicBlock,
     scope: &mut HashMap<String, ScopeItem>,
+    loop_info: Option<&LoopInfo>,
     statement: &ast::Statement,
 ) -> () {
     match statement {
@@ -300,7 +306,7 @@ fn lower_statement(
         ast::Statement::Block(statements) => {
             let mut scope = scope.clone();
             for statement in statements {
-                lower_statement(func_data, bb, &mut scope, statement);
+                lower_statement(func_data, bb, &mut scope, loop_info, statement);
             }
         }
         ast::Statement::If {
@@ -321,9 +327,9 @@ fn lower_statement(
                 .new_value()
                 .branch(condition, then_bb, else_bb);
             push_inst(func_data, *bb, branch);
-            lower_statement(func_data, &mut then_bb, scope, then);
+            lower_statement(func_data, &mut then_bb, scope, loop_info, then);
             if let Some(otherwise) = otherwise {
-                lower_statement(func_data, &mut else_bb, scope, otherwise);
+                lower_statement(func_data, &mut else_bb, scope, loop_info, otherwise);
             }
             if let Some(&x) = func_data
                 .layout_mut()
@@ -358,10 +364,33 @@ fn lower_statement(
             push_inst(func_data, *bb, branch);
 
             *bb = body_bb;
-            lower_statement(func_data, bb, scope, body);
+            lower_statement(
+                func_data,
+                bb,
+                scope,
+                Some(&LoopInfo {
+                    entry: condition_bb,
+                    end: end_bb,
+                }),
+                body,
+            );
             push_inst(func_data, *bb, jump);
 
             *bb = end_bb;
+        }
+        ast::Statement::Break => {
+            let Some(loop_info) = loop_info else {
+                panic!("stray break")
+            };
+            let jump = func_data.dfg_mut().new_value().jump(loop_info.end);
+            push_inst(func_data, *bb, jump);
+        }
+        ast::Statement::Continue => {
+            let Some(loop_info) = loop_info else {
+                panic!("stray continue")
+            };
+            let jump = func_data.dfg_mut().new_value().jump(loop_info.entry);
+            push_inst(func_data, *bb, jump);
         }
         ast::Statement::Return(expression) => {
             let ret_value = lower_expression(func_data, bb, &scope, &expression);
@@ -390,7 +419,7 @@ pub fn main() -> std::io::Result<()> {
     main_data.layout_mut().bbs_mut().push_key_back(bb).unwrap();
     let mut scope = HashMap::new();
     for statement in &ast.function_definition.body {
-        lower_statement(main_data, &mut bb, &mut scope, statement);
+        lower_statement(main_data, &mut bb, &mut scope, None, statement);
     }
 
     let mut output = Vec::<u8>::new();

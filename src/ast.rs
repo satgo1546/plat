@@ -44,6 +44,8 @@ pub enum Statement {
         condition: Box<Expression>,
         body: Box<Statement>,
     },
+    Break,
+    Continue,
     Return(Box<Expression>),
 }
 

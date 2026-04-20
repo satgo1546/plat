@@ -76,6 +76,8 @@ ClosedStatement: Statement = {
     <Block> => Statement::Block(<>),
     "if" "(" <condition: Expression> ")" <then: ClosedStatement> "else" <otherwise: ClosedStatement> => Statement::If { condition, then: Box::new(then), otherwise: Some(Box::new(otherwise)) },
     "while" "(" <condition: Expression> ")" <body: ClosedStatement> => Statement::While { condition, body: Box::new(body) },
+    "break" ";" => Statement::Break,
+    "continue" ";" => Statement::Continue,
     "return" <x: Expression> ";" => Statement::Return(x),
 };
 
