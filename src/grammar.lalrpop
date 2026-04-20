@@ -10,11 +10,25 @@ match {
     _
 }
 
-pub Program: Program = <function_definition: FunctionDefinition> => Program {<>};
+pub Program: Program = <functions: FunctionDefinition+> => Program {<>};
 
-FunctionDefinition: FunctionDefinition = <function_type: FunctionType> <name: Identifier> "(" ")" <body: Block> => FunctionDefinition {<>};
+FunctionDefinition: FunctionDefinition = <function_type: FunctionType> <name: Identifier> "(" <mut parameters: (<Parameter> ",")*> <last_parameter: Parameter?> ")" <body: Block> => {
+    if let Some(last_parameter) = last_parameter {
+        parameters.push(last_parameter);
+    }
+    FunctionDefinition {
+        name,
+        parameters,
+        body,
+    }
+};
 
-FunctionType: FunctionType = "int" => FunctionType {};
+FunctionType: () = {
+    "void",
+    "int",
+};
+
+Parameter: Parameter = <parameter_type: BasicType> <name: Identifier> => Parameter {<>};
 
 Block: Vec<Statement> = "{" <statement: BlockItem*> "}" => statement.concat();
 
@@ -79,6 +93,7 @@ ClosedStatement: Statement = {
     "break" ";" => Statement::Break,
     "continue" ";" => Statement::Continue,
     "return" <x: Expression> ";" => Statement::Return(x),
+    "return" ";" => Statement::Return(Box::new(Expression::Number(0))),
 };
 
 Expression: Box<Expression> = LogicOr;
@@ -146,6 +161,15 @@ FactorOperator: BinaryOperator = {
 
 Unary: Box<Expression> = {
     UnaryOperator Unary => Box::new(Expression::Unary(<>)),
+    <function_name: Identifier> "(" <mut arguments: (<Expression> ",")*> <last_argument: Expression?> ")" => {
+        if let Some(last_argument) = last_argument {
+            arguments.push(last_argument);
+        }
+        Box::new(Expression::Call {
+            function_name,
+            arguments: arguments.into_iter().map(|arg| *arg).collect(),
+        })
+    },
     Primary,
 };
 

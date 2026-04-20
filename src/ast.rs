@@ -1,18 +1,21 @@
 #[derive(Debug, Clone)]
 pub struct Program {
-    pub function_definition: FunctionDefinition,
+    pub functions: Vec<FunctionDefinition>,
 }
 
 #[derive(Debug, Clone)]
 pub struct FunctionDefinition {
-    #[allow(unused)]
-    pub function_type: FunctionType,
+    pub parameters: Vec<Parameter>,
     pub name: String,
     pub body: Vec<Statement>,
 }
 
 #[derive(Debug, Clone)]
-pub struct FunctionType {}
+pub struct Parameter {
+    #[allow(unused)]
+    pub parameter_type: BasicType,
+    pub name: String,
+}
 
 #[derive(Debug, Clone)]
 pub struct BasicType {}
@@ -55,6 +58,10 @@ pub enum Expression {
     Number(i32),
     Unary(UnaryOperator, Box<Expression>),
     Binary(Box<Expression>, BinaryOperator, Box<Expression>),
+    Call {
+        function_name: String,
+        arguments: Vec<Expression>,
+    },
 }
 
 #[derive(Debug, Clone, Copy)]

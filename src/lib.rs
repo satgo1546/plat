@@ -66,7 +66,7 @@ fn evaluate_expression(scope: &HashMap<String, ScopeItem>, expression: &ast::Exp
     match expression {
         ast::Expression::Variable(name) => match scope[name] {
             ScopeItem::Constant(value) => value,
-            ScopeItem::Variable(_) => panic!("`{}` is a variable but used in const", name),
+            _ => panic!("`{}` is not a constant but used in const", name),
         },
         ast::Expression::Number(x) => *x,
         ast::Expression::Unary(operator, expression) => {
@@ -97,6 +97,7 @@ fn evaluate_expression(scope: &HashMap<String, ScopeItem>, expression: &ast::Exp
                 ast::BinaryOperator::BooleanOr => (a != 0 || b != 0).into(),
             }
         }
+        ast::Expression::Call { .. } => panic!("cannot call functions in const"),
     }
 }
 
@@ -114,6 +115,7 @@ fn lower_expression(
                 push_inst(func_data, *bb, value);
                 value
             }
+            ScopeItem::Function(_) => panic!("second-class function"),
         },
         ast::Expression::Number(x) => func_data.dfg_mut().new_value().integer(*x),
         ast::Expression::Unary(operator, expression) => match operator {
@@ -232,6 +234,21 @@ fn lower_expression(
             push_inst(func_data, *bb, value);
             value
         }
+        ast::Expression::Call {
+            function_name,
+            arguments,
+        } => match scope[function_name] {
+            ScopeItem::Function(func) => {
+                let args = arguments
+                    .iter()
+                    .map(|arg| lower_expression(func_data, bb, scope, arg))
+                    .collect();
+                let value = func_data.dfg_mut().new_value().call(func, args);
+                push_inst(func_data, *bb, value);
+                value
+            }
+            _ => panic!("call non-function"),
+        },
     }
 }
 
@@ -239,6 +256,7 @@ fn lower_expression(
 enum ScopeItem {
     Constant(i32),
     Variable(koopa::ir::Value),
+    Function(koopa::ir::Function),
 }
 
 struct LoopInfo {
@@ -285,11 +303,11 @@ fn lower_statement(
             let value = lower_expression(func_data, bb, &scope, &value);
             match &**target {
                 ast::Expression::Variable(name) => match scope[name] {
-                    ScopeItem::Constant(_) => panic!("assign to constant"),
                     ScopeItem::Variable(alloc) => {
                         let store = func_data.dfg_mut().new_value().store(value, alloc);
                         push_inst(func_data, *bb, store);
                     }
+                    _ => panic!("assign to non-variable"),
                 },
                 _ => panic!("invalid lvalue"),
             }
@@ -386,28 +404,57 @@ fn lower_statement(
     }
 }
 
+fn lower_program(ast: &ast::Program) -> ir::Program {
+    let mut program = ir::Program::new();
+    let mut scope = HashMap::with_capacity(ast.functions.len());
+    let mut funcs = Vec::with_capacity(ast.functions.len());
+    for function in &ast.functions {
+        let func = program.new_func_def_with_param_names(
+            format!("@{}", function.name),
+            function
+                .parameters
+                .iter()
+                .map(|p| (Some(format!("@{}", p.name)), ir::Type::get_i32()))
+                .collect(),
+            ir::Type::get_i32(),
+        );
+        scope.insert(function.name.clone(), ScopeItem::Function(func));
+        funcs.push(func);
+    }
+    for (function, func) in ast.functions.iter().zip(funcs) {
+        let func_data = program.func_mut(func);
+        let mut bb = new_bb(func_data, 0);
+        let mut scope = scope.clone();
+        for (parameter, param) in function
+            .parameters
+            .iter()
+            .zip(Vec::from(func_data.params()))
+        // clone forced by borrow checker 😾
+        {
+            let alloc = func_data
+                .dfg_mut()
+                .new_value()
+                .alloc(koopa::ir::Type::get_i32());
+            push_inst(func_data, bb, alloc);
+            let store = func_data.dfg_mut().new_value().store(param, alloc);
+            push_inst(func_data, bb, store);
+            scope.insert(parameter.name.clone(), ScopeItem::Variable(alloc));
+        }
+        for statement in &function.body {
+            lower_statement(func_data, &mut bb, &mut scope, None, statement);
+        }
+        let zero = func_data.dfg_mut().new_value().integer(0);
+        let ret = func_data.dfg_mut().new_value().ret(Some(zero));
+        push_inst(func_data, bb, ret);
+    }
+    program
+}
+
 pub fn main() -> std::io::Result<()> {
     let args = Args::parse();
     let input = std::fs::read_to_string(args.input)?;
     let ast = grammar::ProgramParser::new().parse(&input).unwrap();
-
-    let mut program = ir::Program::new();
-    let main = program.new_func_def_with_param_names(
-        format!("@{}", ast.function_definition.name),
-        vec![],
-        ir::Type::get_i32(),
-    );
-    let main_data = program.func_mut(main);
-    let mut bb = main_data
-        .dfg_mut()
-        .new_bb()
-        .basic_block(Some("%entry".into()));
-    main_data.layout_mut().bbs_mut().push_key_back(bb).unwrap();
-    let mut scope = HashMap::new();
-    for statement in &ast.function_definition.body {
-        lower_statement(main_data, &mut bb, &mut scope, None, statement);
-    }
-
+    let program = lower_program(&ast);
     let mut output = Vec::<u8>::new();
     match args.mode {
         Mode::Koopa => KoopaGenerator::new(&mut output).generate_on(&program)?,

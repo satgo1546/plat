@@ -3,18 +3,22 @@ use std::{collections::HashMap, io::Write};
 pub fn emit_program<W: Write>(f: &mut W, program: &koopa::ir::Program) -> std::io::Result<()> {
     writeln!(f, ".text\n.globl main")?;
     for &func in program.func_layout() {
-        emit_function(f, program.func(func))?;
+        emit_function(f, program, func)?;
     }
     Ok(())
 }
 
 #[derive(Debug, Default)]
 struct StackFrame {
-    map: HashMap<koopa::ir::Value, i32>,
-    offset: i32,
+    map: HashMap<koopa::ir::Value, usize>,
+    offset: usize,
 }
 
 impl StackFrame {
+    fn round(size: usize) -> usize {
+        (size + 15) & !15
+    }
+
     fn load<W: Write>(
         &self,
         f: &mut W,
@@ -26,10 +30,15 @@ impl StackFrame {
             koopa::ir::ValueKind::Integer(integer) => {
                 writeln!(f, "li {}, {}", register, integer.value())
             }
-            koopa::ir::ValueKind::BlockArgRef(arg) => {
-                writeln!(f, "mv {}, a{}", register, arg.index())
+            koopa::ir::ValueKind::FuncArgRef(arg) => {
+                let i = arg.index();
+                if i < 8 {
+                    writeln!(f, "mv {}, a{}", register, i)
+                } else {
+                    writeln!(f, "lw {}, {}(sp)", register, self.offset + (i - 8) * 4)
+                }
             }
-            _ => writeln!(f, "lw {}, {}(sp)", register, self.map[&value] + self.offset),
+            _ => writeln!(f, "lw {}, {}(sp)", register, self.offset - self.map[&value]),
         }
     }
 
@@ -39,22 +48,44 @@ impl StackFrame {
         register: &str,
         value: koopa::ir::Value,
     ) -> std::io::Result<()> {
-        writeln!(f, "sw {}, {}(sp)", register, self.map[&value] + self.offset)
+        writeln!(f, "sw {}, {}(sp)", register, self.offset - self.map[&value])
     }
 }
 
-fn emit_function<W: Write>(f: &mut W, func_data: &koopa::ir::FunctionData) -> std::io::Result<()> {
-    let mut stack_frame = StackFrame::default();
-    for (_, node) in func_data.layout().bbs() {
+fn emit_function<W: Write>(
+    f: &mut W,
+    program: &koopa::ir::Program,
+    func: koopa::ir::Function,
+) -> std::io::Result<()> {
+    let func_data = program.func(func);
+    let mut stack_frame = StackFrame {
+        offset: 4,
+        map: HashMap::new(),
+    };
+    let mut max_args = 0;
+    for (&bb, node) in func_data.layout().bbs() {
+        for &param in func_data.dfg().bb(bb).params() {
+            stack_frame.offset += 4;
+            stack_frame.map.insert(param, stack_frame.offset);
+        }
         for &inst in node.insts().keys() {
             if !func_data.dfg().value(inst).ty().is_unit() {
                 stack_frame.offset += 4;
-                stack_frame.map.insert(inst, -stack_frame.offset);
+                stack_frame.map.insert(inst, stack_frame.offset);
+            }
+            if let koopa::ir::ValueKind::Call(call) = func_data.dfg().value(inst).kind() {
+                max_args = max_args.max(call.args().len());
             }
         }
     }
-    writeln!(f, "{}:", &func_data.name()[1..])?;
-    writeln!(f, "addi sp, sp, {}", -stack_frame.offset)?;
+    stack_frame.offset = StackFrame::round(stack_frame.offset + max_args * 4);
+    writeln!(
+        f,
+        "\n{}:\naddi sp, sp, -{}\nsw ra, {}(sp)",
+        &func_data.name()[1..],
+        stack_frame.offset,
+        stack_frame.offset - 4,
+    )?;
     for (&bb, node) in func_data.layout().bbs() {
         writeln!(
             f,
@@ -62,7 +93,7 @@ fn emit_function<W: Write>(f: &mut W, func_data: &koopa::ir::FunctionData) -> st
             &func_data.dfg().bb(bb).name().as_ref().unwrap()[1..]
         )?;
         for &inst in node.insts().keys() {
-            emit_value(f, func_data.dfg(), &stack_frame, inst)?;
+            emit_value(f, program, func_data.dfg(), &stack_frame, inst)?;
         }
     }
     Ok(())
@@ -70,6 +101,7 @@ fn emit_function<W: Write>(f: &mut W, func_data: &koopa::ir::FunctionData) -> st
 
 fn emit_value<W: Write>(
     f: &mut W,
+    program: &koopa::ir::Program,
     dfg: &koopa::ir::dfg::DataFlowGraph,
     stack_frame: &StackFrame,
     value: koopa::ir::Value,
@@ -79,7 +111,7 @@ fn emit_value<W: Write>(
         koopa::ir::ValueKind::ZeroInit(_) => todo!(),
         koopa::ir::ValueKind::Undef(_) => todo!(),
         koopa::ir::ValueKind::Aggregate(_) => todo!(),
-        koopa::ir::ValueKind::FuncArgRef(_) => todo!(),
+        koopa::ir::ValueKind::FuncArgRef(_) => panic!("how did you do that?"),
         koopa::ir::ValueKind::BlockArgRef(_) => panic!("how did you do that?"),
         koopa::ir::ValueKind::Alloc(_) => Ok(()),
         koopa::ir::ValueKind::GlobalAlloc(_) => todo!(),
@@ -161,8 +193,9 @@ fn emit_value<W: Write>(
             )
         }
         koopa::ir::ValueKind::Jump(jump) => {
-            for (i, &arg) in jump.args().iter().enumerate() {
-                stack_frame.load(f, dfg, &format!("a{}", i), arg)?;
+            for (&arg, &param) in jump.args().iter().zip(dfg.bb(jump.target()).params()) {
+                stack_frame.load(f, dfg, "t1", arg)?;
+                stack_frame.store(f, "t1", param)?;
             }
             writeln!(
                 f,
@@ -170,12 +203,28 @@ fn emit_value<W: Write>(
                 &dfg.bb(jump.target()).name().as_ref().unwrap()[1..]
             )
         }
-        koopa::ir::ValueKind::Call(_) => todo!(),
+        koopa::ir::ValueKind::Call(call) => {
+            let mut args = call.args().iter();
+            for (i, &arg) in args.by_ref().take(8).enumerate() {
+                stack_frame.load(f, dfg, &format!("a{}", i), arg)?;
+            }
+            for (i, &arg) in args.enumerate() {
+                stack_frame.load(f, dfg, "t1", arg)?;
+                writeln!(f, "sw t1, {}(sp)", i * 4)?;
+            }
+            writeln!(f, "call {}", &program.func(call.callee()).name()[1..])?;
+            stack_frame.store(f, "a0", value)
+        }
         koopa::ir::ValueKind::Return(ret) => {
             if let Some(value) = ret.value() {
                 stack_frame.load(f, dfg, "a0", value)?;
             }
-            writeln!(f, "addi sp, sp, {}\nret", stack_frame.offset)
+            writeln!(
+                f,
+                "lw ra, {}(sp)\naddi sp, sp, {}\nret",
+                stack_frame.offset - 4,
+                stack_frame.offset,
+            )
         }
     }
 }
