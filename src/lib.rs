@@ -272,27 +272,27 @@ fn lower_statement(
     statement: &ast::Statement,
 ) -> () {
     match statement {
-        ast::Statement::Constant {
+        ast::Statement::Declaration(ast::Declaration::Constant {
             constant_type: ast::BasicType {},
             name,
             value,
-        } => {
+        }) => {
             scope.insert(
                 name.clone(),
                 ScopeItem::Constant(evaluate_expression(&scope, &value)),
             );
         }
-        ast::Statement::Variable {
+        ast::Statement::Declaration(ast::Declaration::Variable {
             variable_type: ast::BasicType {},
             name,
-            value,
-        } => {
+            initial_value,
+        }) => {
             let alloc = func_data
                 .dfg_mut()
                 .new_value()
                 .alloc(koopa::ir::Type::get_i32());
             push_inst(func_data, *bb, alloc);
-            if let Some(value) = value {
+            if let Some(value) = initial_value {
                 let value = lower_expression(func_data, bb, &scope, &value);
                 let store = func_data.dfg_mut().new_value().store(value, alloc);
                 push_inst(func_data, *bb, store);

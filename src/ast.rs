@@ -21,7 +21,7 @@ pub struct Parameter {
 pub struct BasicType {}
 
 #[derive(Debug, Clone)]
-pub enum Statement {
+pub enum Declaration {
     Constant {
         constant_type: BasicType,
         name: String,
@@ -30,8 +30,13 @@ pub enum Statement {
     Variable {
         variable_type: BasicType,
         name: String,
-        value: Option<Box<Expression>>,
+        initial_value: Option<Box<Expression>>,
     },
+}
+
+#[derive(Debug, Clone)]
+pub enum Statement {
+    Declaration(Declaration),
     Assign {
         target: Box<Expression>,
         value: Box<Expression>,

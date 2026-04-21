@@ -33,22 +33,22 @@ Parameter: Parameter = <parameter_type: BasicType> <name: Identifier> => Paramet
 Block: Vec<Statement> = "{" <statement: BlockItem*> "}" => statement.concat();
 
 BlockItem: Vec<Statement> = {
-    Declaration,
+    Declaration => <>.into_iter().map(|d| Statement::Declaration(d)).collect(),
     Statement => vec![<>],
 };
 
 BasicType: BasicType = "int" => BasicType {};
 
-Declaration: Vec<Statement> = {
+Declaration: Vec<Declaration> = {
     ConstantDeclaration,
     VariableDeclaration,
 };
 
-ConstantDeclaration: Vec<Statement> = "const" <constant_type: BasicType> <mut items: (<ConstantDefinition> ",")*> <last: ConstantDefinition> ";" => {
+ConstantDeclaration: Vec<Declaration> = "const" <constant_type: BasicType> <mut items: (<ConstantDefinition> ",")*> <last: ConstantDefinition> ";" => {
     items.push(last);
     items
         .into_iter()
-        .map(|(name, value)| Statement::Constant {
+        .map(|(name, value)| Declaration::Constant {
             constant_type: constant_type.clone(),
             name,
             value,
@@ -58,14 +58,14 @@ ConstantDeclaration: Vec<Statement> = "const" <constant_type: BasicType> <mut it
 
 ConstantDefinition: (String, Box<Expression>) = <Identifier> "=" <Expression> => (<>);
 
-VariableDeclaration: Vec<Statement> = <variable_type: BasicType> <mut items: (<VariableDefinition> ",")*> <last: VariableDefinition> ";" => {
+VariableDeclaration: Vec<Declaration> = <variable_type: BasicType> <mut items: (<VariableDefinition> ",")*> <last: VariableDefinition> ";" => {
     items.push(last);
     items
         .into_iter()
-        .map(|(name, value)| Statement::Variable {
+        .map(|(name, value)| Declaration::Variable {
             variable_type: variable_type.clone(),
             name,
-            value,
+            initial_value: value,
         })
         .collect()
 };
