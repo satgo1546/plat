@@ -58,6 +58,9 @@ fn emit_function<W: Write>(
     func: koopa::ir::Function,
 ) -> std::io::Result<()> {
     let func_data = program.func(func);
+    if let None = func_data.layout().entry_bb() {
+        return Ok(());
+    }
     let mut stack_frame = StackFrame {
         offset: 4,
         map: HashMap::new(),

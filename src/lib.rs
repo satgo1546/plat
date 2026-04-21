@@ -406,7 +406,33 @@ fn lower_statement(
 
 fn lower_program(ast: &ast::Program) -> ir::Program {
     let mut program = ir::Program::new();
-    let mut scope = HashMap::with_capacity(ast.functions.len());
+    let mut scope = HashMap::with_capacity(ast.functions.len() + 8);
+    for (name, params) in [
+        ("@getint", vec![]),
+        ("@getch", vec![]),
+        (
+            "@getarray",
+            vec![ir::Type::get_pointer(ir::Type::get_i32())],
+        ),
+        ("@putint", vec![ir::Type::get_i32()]),
+        ("@putch", vec![ir::Type::get_i32()]),
+        (
+            "@putarray",
+            vec![
+                ir::Type::get_i32(),
+                ir::Type::get_pointer(ir::Type::get_i32()),
+            ],
+        ),
+        ("@starttime", vec![]),
+        ("@stoptime", vec![]),
+    ] {
+        let func = program.new_func_def_with_param_names(
+            name.to_string(),
+            params.into_iter().map(|t| (None, t)).collect(),
+            ir::Type::get_i32(),
+        );
+        scope.insert(name[1..].to_string(), ScopeItem::Function(func));
+    }
     let mut funcs = Vec::with_capacity(ast.functions.len());
     for function in &ast.functions {
         let func = program.new_func_def_with_param_names(
