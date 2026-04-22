@@ -1,6 +1,13 @@
 #[derive(Debug, Clone)]
 pub struct Program {
+    pub declarations: Vec<Declaration>,
     pub functions: Vec<FunctionDefinition>,
+}
+
+#[derive(Debug, Clone)]
+pub enum TopLevelItem {
+    Declaration(Vec<Declaration>),
+    Function(FunctionDefinition),
 }
 
 #[derive(Debug, Clone)]

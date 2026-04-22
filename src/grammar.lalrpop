@@ -10,9 +10,30 @@ match {
     _
 }
 
-pub Program: Program = <functions: FunctionDefinition+> => Program {<>};
+pub Program: Program = <items: TopLevelItem*> => {
+    let mut program = Program {
+        declarations: vec![],
+        functions: vec![],
+    };
+    for item in items {
+        match item {
+            TopLevelItem::Declaration(declaration) => {
+                program.declarations.extend(declaration);
+            }
+            TopLevelItem::Function(function) => {
+                program.functions.push(function);
+            }
+        }
+    }
+    program
+};
 
-FunctionDefinition: FunctionDefinition = <function_type: FunctionType> <name: Identifier> "(" <mut parameters: (<Parameter> ",")*> <last_parameter: Parameter?> ")" <body: Block> => {
+TopLevelItem: TopLevelItem = {
+    Declaration => TopLevelItem::Declaration(<>),
+    FunctionDefinition => TopLevelItem::Function(<>),
+};
+
+FunctionDefinition: FunctionDefinition = <function_type: BasicType> <name: Identifier> "(" <mut parameters: (<Parameter> ",")*> <last_parameter: Parameter?> ")" <body: Block> => {
     if let Some(last_parameter) = last_parameter {
         parameters.push(last_parameter);
     }
@@ -21,11 +42,6 @@ FunctionDefinition: FunctionDefinition = <function_type: FunctionType> <name: Id
         parameters,
         body,
     }
-};
-
-FunctionType: () = {
-    "void",
-    "int",
 };
 
 Parameter: Parameter = <parameter_type: BasicType> <name: Identifier> => Parameter {<>};
@@ -37,7 +53,10 @@ BlockItem: Vec<Statement> = {
     Statement => vec![<>],
 };
 
-BasicType: BasicType = "int" => BasicType {};
+BasicType: BasicType = {
+    "void" => BasicType {},
+    "int" => BasicType {},
+};
 
 Declaration: Vec<Declaration> = {
     ConstantDeclaration,

@@ -1,9 +1,21 @@
 use std::{collections::HashMap, io::Write};
 
 pub fn emit_program<W: Write>(f: &mut W, program: &koopa::ir::Program) -> std::io::Result<()> {
+    let mut globals = StackFrame {
+        map: HashMap::with_capacity(program.inst_layout().len()),
+        offset: 0,
+    };
+    for &var in program.inst_layout() {
+        globals.map.insert(var, globals.offset);
+        let var = program.borrow_value(var);
+        let koopa::ir::TypeKind::Pointer(ty) = var.ty().kind() else {
+            panic!("global alloc should return a pointer")
+        };
+        globals.offset += ty.size();
+    }
     writeln!(f, ".text\n.globl main")?;
     for &func in program.func_layout() {
-        emit_function(f, program, func)?;
+        emit_function(f, program, &globals, func)?;
     }
     Ok(())
 }
@@ -26,6 +38,9 @@ impl StackFrame {
         register: &str,
         value: koopa::ir::Value,
     ) -> std::io::Result<()> {
+        if value.is_global() {
+            return writeln!(f, "lw {}, {}(fp)", register, self.map[&value]);
+        }
         match dfg.value(value).kind() {
             koopa::ir::ValueKind::Integer(integer) => {
                 writeln!(f, "li {}, {}", register, integer.value())
@@ -38,6 +53,7 @@ impl StackFrame {
                     writeln!(f, "lw {}, {}(sp)", register, self.offset + (i - 8) * 4)
                 }
             }
+            koopa::ir::ValueKind::GlobalAlloc(_) => panic!("a local global?"),
             _ => writeln!(f, "lw {}, {}(sp)", register, self.offset - self.map[&value]),
         }
     }
@@ -48,23 +64,32 @@ impl StackFrame {
         register: &str,
         value: koopa::ir::Value,
     ) -> std::io::Result<()> {
-        writeln!(f, "sw {}, {}(sp)", register, self.offset - self.map[&value])
+        if value.is_global() {
+            writeln!(f, "sw {}, {}(fp)", register, self.map[&value])
+        } else {
+            writeln!(f, "sw {}, {}(sp)", register, self.offset - self.map[&value])
+        }
     }
 }
 
 fn emit_function<W: Write>(
     f: &mut W,
     program: &koopa::ir::Program,
+    globals: &StackFrame,
     func: koopa::ir::Function,
 ) -> std::io::Result<()> {
     let func_data = program.func(func);
     if let None = func_data.layout().entry_bb() {
         return Ok(());
     }
+    let is_main = func_data.name() == "@main";
     let mut stack_frame = StackFrame {
         offset: 4,
-        map: HashMap::new(),
+        map: globals.map.clone(),
     };
+    if is_main {
+        stack_frame.offset += globals.offset;
+    }
     let mut max_args = 0;
     for (&bb, node) in func_data.layout().bbs() {
         for &param in func_data.dfg().bb(bb).params() {
@@ -89,6 +114,31 @@ fn emit_function<W: Write>(
         stack_frame.offset,
         stack_frame.offset - 4,
     )?;
+    if is_main {
+        writeln!(
+            f,
+            "addi fp, sp, {}",
+            stack_frame.offset - globals.offset - 4,
+        )?;
+        for &var in program.inst_layout() {
+            let alloc = program.borrow_value(var);
+            let koopa::ir::ValueKind::GlobalAlloc(alloc) = alloc.kind() else {
+                panic!("top-level computation")
+            };
+            match program.borrow_value(alloc.init()).kind() {
+                koopa::ir::ValueKind::Integer(integer) => {
+                    writeln!(f, "li t1, {}", integer.value())?;
+                    stack_frame.store(f, "t1", var)
+                }
+                koopa::ir::ValueKind::ZeroInit(_) | koopa::ir::ValueKind::Undef(_) => {
+                    writeln!(f, "li t1, 0")?;
+                    stack_frame.store(f, "t1", var)
+                }
+                koopa::ir::ValueKind::Aggregate(_) => todo!(),
+                _ => panic!("invalid initializer for global variable"),
+            }?;
+        }
+    }
     for (&bb, node) in func_data.layout().bbs() {
         writeln!(
             f,
@@ -117,7 +167,7 @@ fn emit_value<W: Write>(
         koopa::ir::ValueKind::FuncArgRef(_) => panic!("how did you do that?"),
         koopa::ir::ValueKind::BlockArgRef(_) => panic!("how did you do that?"),
         koopa::ir::ValueKind::Alloc(_) => Ok(()),
-        koopa::ir::ValueKind::GlobalAlloc(_) => todo!(),
+        koopa::ir::ValueKind::GlobalAlloc(_) => panic!("how? that's not a local value"),
         koopa::ir::ValueKind::Load(load) => {
             stack_frame.load(f, dfg, "t1", load.src())?;
             stack_frame.store(f, "t1", value)

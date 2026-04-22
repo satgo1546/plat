@@ -3,7 +3,9 @@ use koopa::{
     back::KoopaGenerator,
     ir::{
         self, BasicBlock, FunctionData, Value,
-        builder::{BasicBlockBuilder, EntityInfoQuerier, LocalInstBuilder, ValueBuilder},
+        builder::{
+            BasicBlockBuilder, EntityInfoQuerier, GlobalInstBuilder, LocalInstBuilder, ValueBuilder,
+        },
     },
 };
 use lalrpop_util::lalrpop_mod;
@@ -432,6 +434,34 @@ fn lower_program(ast: &ast::Program) -> ir::Program {
             ir::Type::get_i32(),
         );
         scope.insert(name[1..].to_string(), ScopeItem::Function(func));
+    }
+    for declaration in &ast.declarations {
+        match declaration {
+            ast::Declaration::Constant {
+                constant_type: ast::BasicType {},
+                name,
+                value,
+            } => {
+                scope.insert(
+                    name.clone(),
+                    ScopeItem::Constant(evaluate_expression(&scope, &value)),
+                );
+            }
+            ast::Declaration::Variable {
+                variable_type: ast::BasicType {},
+                name,
+                initial_value,
+            } => {
+                let value = match initial_value {
+                    Some(value) => program
+                        .new_value()
+                        .integer(evaluate_expression(&scope, &value)),
+                    None => program.new_value().zero_init(ir::Type::get_i32()),
+                };
+                let alloc = program.new_value().global_alloc(value);
+                scope.insert(name.clone(), ScopeItem::Variable(alloc));
+            }
+        }
     }
     let mut funcs = Vec::with_capacity(ast.functions.len());
     for function in &ast.functions {
