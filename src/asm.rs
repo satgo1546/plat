@@ -11,7 +11,7 @@ pub fn emit_program<W: Write>(f: &mut W, program: &koopa::ir::Program) -> std::i
         let koopa::ir::TypeKind::Pointer(ty) = var.ty().kind() else {
             panic!("global alloc should return a pointer")
         };
-        globals.offset += ty.size();
+        globals.offset += ty.size() + 4;
     }
     writeln!(f, ".text\n.globl main")?;
     for &func in program.func_layout() {
@@ -58,6 +58,20 @@ impl StackFrame {
         }
     }
 
+    fn load_address<W: Write>(
+        &self,
+        f: &mut W,
+        register: &str,
+        value: koopa::ir::Value,
+    ) -> std::io::Result<()> {
+        write!(f, "addi {}, ", register)?;
+        if value.is_global() {
+            writeln!(f, "fp, {}", self.map[&value] + 4)
+        } else {
+            writeln!(f, "sp, {}", self.offset - self.map[&value] + 4)
+        }
+    }
+
     fn store<W: Write>(
         &self,
         f: &mut W,
@@ -97,8 +111,14 @@ fn emit_function<W: Write>(
             stack_frame.map.insert(param, stack_frame.offset);
         }
         for &inst in node.insts().keys() {
-            if !func_data.dfg().value(inst).ty().is_unit() {
-                stack_frame.offset += 4;
+            let ty = func_data.dfg().value(inst).ty();
+            if let koopa::ir::ValueKind::Alloc(_) = func_data.dfg().value(inst).kind()
+                && let koopa::ir::TypeKind::Pointer(ty) = ty.kind()
+            {
+                stack_frame.offset += ty.size();
+            }
+            if !ty.is_unit() {
+                stack_frame.offset += ty.size();
                 stack_frame.map.insert(inst, stack_frame.offset);
             }
             if let koopa::ir::ValueKind::Call(call) = func_data.dfg().value(inst).kind() {
@@ -125,14 +145,14 @@ fn emit_function<W: Write>(
             let koopa::ir::ValueKind::GlobalAlloc(alloc) = alloc.kind() else {
                 panic!("top-level computation")
             };
+            stack_frame.load_address(f, "t1", var)?;
+            stack_frame.store(f, "t1", var)?;
             match program.borrow_value(alloc.init()).kind() {
                 koopa::ir::ValueKind::Integer(integer) => {
-                    writeln!(f, "li t1, {}", integer.value())?;
-                    stack_frame.store(f, "t1", var)
+                    writeln!(f, "li t2, {}\nsw t2, (t1)", integer.value())
                 }
                 koopa::ir::ValueKind::ZeroInit(_) | koopa::ir::ValueKind::Undef(_) => {
-                    writeln!(f, "li t1, 0")?;
-                    stack_frame.store(f, "t1", var)
+                    writeln!(f, "sw x0, (t1)")
                 }
                 koopa::ir::ValueKind::Aggregate(_) => todo!(),
                 _ => panic!("invalid initializer for global variable"),
@@ -161,23 +181,45 @@ fn emit_value<W: Write>(
 ) -> std::io::Result<()> {
     match dfg.value(value).kind() {
         koopa::ir::ValueKind::Integer(_) => panic!("how did you do that?"),
-        koopa::ir::ValueKind::ZeroInit(_) => todo!(),
-        koopa::ir::ValueKind::Undef(_) => todo!(),
-        koopa::ir::ValueKind::Aggregate(_) => todo!(),
+        koopa::ir::ValueKind::ZeroInit(_) => panic!("how did you do that?"),
+        koopa::ir::ValueKind::Undef(_) => panic!("how did you do that?"),
+        koopa::ir::ValueKind::Aggregate(_) => panic!("how did you do that?"),
         koopa::ir::ValueKind::FuncArgRef(_) => panic!("how did you do that?"),
         koopa::ir::ValueKind::BlockArgRef(_) => panic!("how did you do that?"),
-        koopa::ir::ValueKind::Alloc(_) => Ok(()),
+        koopa::ir::ValueKind::Alloc(_) => {
+            stack_frame.load_address(f, "t1", value)?;
+            stack_frame.store(f, "t1", value)
+        }
         koopa::ir::ValueKind::GlobalAlloc(_) => panic!("how? that's not a local value"),
         koopa::ir::ValueKind::Load(load) => {
             stack_frame.load(f, dfg, "t1", load.src())?;
+            writeln!(f, "lw t1, (t1)")?;
             stack_frame.store(f, "t1", value)
         }
         koopa::ir::ValueKind::Store(store) => {
             stack_frame.load(f, dfg, "t1", store.value())?;
-            stack_frame.store(f, "t1", store.dest())
+            stack_frame.load(f, dfg, "t2", store.dest())?;
+            writeln!(f, "sw t1, (t2)")
         }
         koopa::ir::ValueKind::GetPtr(_) => todo!(),
-        koopa::ir::ValueKind::GetElemPtr(_) => todo!(),
+        koopa::ir::ValueKind::GetElemPtr(get_elem_ptr) => {
+            stack_frame.load(f, dfg, "t2", get_elem_ptr.src())?;
+            stack_frame.load(f, dfg, "t1", get_elem_ptr.index())?;
+            let src = get_elem_ptr.src();
+            let src = if src.is_global() {
+                &program.borrow_value(src)
+            } else {
+                dfg.value(src)
+            };
+            let koopa::ir::TypeKind::Pointer(ty) = src.ty().kind() else {
+                panic!("how? a value to getelemptr of?")
+            };
+            let koopa::ir::TypeKind::Array(ty, _) = ty.kind() else {
+                panic!("how? a basic value to getelemptr of?")
+            };
+            writeln!(f, "muli t1, t1, {}\naddi t1, t2, t1", ty.size())?;
+            stack_frame.store(f, "t1", value)
+        }
         koopa::ir::ValueKind::Binary(binary) => {
             stack_frame.load(f, dfg, "t2", binary.lhs())?;
             stack_frame.load(f, dfg, "t1", binary.rhs())?;

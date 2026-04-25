@@ -70,6 +70,7 @@ fn evaluate_expression(scope: &HashMap<String, ScopeItem>, expression: &ast::Exp
             ScopeItem::Constant(value) => value,
             _ => panic!("`{}` is not a constant but used in const", name),
         },
+        ast::Expression::Element(_, _) => panic!("cannot manipulate array in constant"),
         ast::Expression::Number(x) => *x,
         ast::Expression::Unary(operator, expression) => {
             let x = evaluate_expression(scope, expression);
@@ -103,6 +104,55 @@ fn evaluate_expression(scope: &HashMap<String, ScopeItem>, expression: &ast::Exp
     }
 }
 
+fn lower_type(scope: &HashMap<String, ScopeItem>, ast_type: &ast::Type) -> (Vec<usize>, ir::Type) {
+    let dimensions: Vec<_> = ast_type
+        .dimensions
+        .iter()
+        .map(|expression| evaluate_expression(scope, expression) as usize)
+        .collect();
+    let mut ty = ir::Type::get_i32();
+    for dimension in dimensions.iter().copied() {
+        if dimension == 0 {
+            ty = ir::Type::get_pointer(ty);
+        } else {
+            ty = ir::Type::get_array(ty, dimension);
+        }
+    }
+    (dimensions, ty)
+}
+
+fn lower_lvalue(
+    func_data: &mut FunctionData,
+    bb: &mut BasicBlock,
+    scope: &HashMap<String, ScopeItem>,
+    expression: &ast::Expression,
+) -> Value {
+    match expression {
+        ast::Expression::Variable(name) => {
+            let ScopeItem::Variable(value) = scope[name] else {
+                panic!("`{}` is not a variable", name)
+            };
+            value
+        }
+        ast::Expression::Element(array, index) => {
+            let array = match &**array {
+                ast::Expression::Variable(name) => {
+                    let ScopeItem::Variable(value) = scope[name] else {
+                        panic!("`{}` is not an array", name)
+                    };
+                    value
+                }
+                _ => lower_lvalue(func_data, bb, scope, array),
+            };
+            let index = lower_expression(func_data, bb, scope, index);
+            let ptr = func_data.dfg_mut().new_value().get_elem_ptr(array, index);
+            push_inst(func_data, *bb, ptr);
+            ptr
+        }
+        _ => panic!("invalid lvalue"),
+    }
+}
+
 fn lower_expression(
     func_data: &mut FunctionData,
     bb: &mut BasicBlock,
@@ -119,6 +169,12 @@ fn lower_expression(
             }
             ScopeItem::Function(_) => panic!("second-class function"),
         },
+        ast::Expression::Element(_, _) => {
+            let ptr = lower_lvalue(func_data, bb, scope, expression);
+            let value = func_data.dfg_mut().new_value().load(ptr);
+            push_inst(func_data, *bb, value);
+            value
+        }
         ast::Expression::Number(x) => func_data.dfg_mut().new_value().integer(*x),
         ast::Expression::Unary(operator, expression) => match operator {
             ast::UnaryOperator::Plus => lower_expression(func_data, bb, scope, expression),
@@ -274,25 +330,19 @@ fn lower_statement(
     statement: &ast::Statement,
 ) -> () {
     match statement {
-        ast::Statement::Declaration(ast::Declaration::Constant {
-            constant_type: ast::BasicType {},
-            name,
-            value,
-        }) => {
+        ast::Statement::Declaration(ast::Declaration::Constant { name, value }) => {
             scope.insert(
                 name.clone(),
                 ScopeItem::Constant(evaluate_expression(&scope, &value)),
             );
         }
         ast::Statement::Declaration(ast::Declaration::Variable {
-            variable_type: ast::BasicType {},
+            variable_type,
             name,
             initial_value,
         }) => {
-            let alloc = func_data
-                .dfg_mut()
-                .new_value()
-                .alloc(koopa::ir::Type::get_i32());
+            let (dimensions, ty) = lower_type(&scope, variable_type);
+            let alloc = func_data.dfg_mut().new_value().alloc(ty);
             push_inst(func_data, *bb, alloc);
             if let Some(value) = initial_value {
                 let value = lower_expression(func_data, bb, &scope, &value);
@@ -302,17 +352,10 @@ fn lower_statement(
             scope.insert(name.clone(), ScopeItem::Variable(alloc));
         }
         ast::Statement::Assign { target, value } => {
+            let ptr = lower_lvalue(func_data, bb, &scope, target);
             let value = lower_expression(func_data, bb, &scope, &value);
-            match &**target {
-                ast::Expression::Variable(name) => match scope[name] {
-                    ScopeItem::Variable(alloc) => {
-                        let store = func_data.dfg_mut().new_value().store(value, alloc);
-                        push_inst(func_data, *bb, store);
-                    }
-                    _ => panic!("assign to non-variable"),
-                },
-                _ => panic!("invalid lvalue"),
-            }
+            let store = func_data.dfg_mut().new_value().store(value, ptr);
+            push_inst(func_data, *bb, store);
         }
         ast::Statement::Expression(expression) => {
             lower_expression(func_data, bb, scope, expression);
@@ -437,26 +480,23 @@ fn lower_program(ast: &ast::Program) -> ir::Program {
     }
     for declaration in &ast.declarations {
         match declaration {
-            ast::Declaration::Constant {
-                constant_type: ast::BasicType {},
-                name,
-                value,
-            } => {
+            ast::Declaration::Constant { name, value } => {
                 scope.insert(
                     name.clone(),
                     ScopeItem::Constant(evaluate_expression(&scope, &value)),
                 );
             }
             ast::Declaration::Variable {
-                variable_type: ast::BasicType {},
+                variable_type,
                 name,
                 initial_value,
             } => {
+                let (dimensions, ty) = lower_type(&scope, variable_type);
                 let value = match initial_value {
                     Some(value) => program
                         .new_value()
                         .integer(evaluate_expression(&scope, &value)),
-                    None => program.new_value().zero_init(ir::Type::get_i32()),
+                    None => program.new_value().zero_init(ty),
                 };
                 let alloc = program.new_value().global_alloc(value);
                 scope.insert(name.clone(), ScopeItem::Variable(alloc));
@@ -510,6 +550,7 @@ pub fn main() -> std::io::Result<()> {
     let args = Args::parse();
     let input = std::fs::read_to_string(args.input)?;
     let ast = grammar::ProgramParser::new().parse(&input).unwrap();
+    koopa::ir::Type::set_ptr_size(4);
     let program = lower_program(&ast);
     let mut output = Vec::<u8>::new();
     match args.mode {

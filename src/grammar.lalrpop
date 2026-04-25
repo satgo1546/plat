@@ -44,7 +44,7 @@ FunctionDefinition: FunctionDefinition = <function_type: BasicType> <name: Ident
     }
 };
 
-Parameter: Parameter = <parameter_type: BasicType> <name: Identifier> => Parameter {<>};
+Parameter: Parameter = BasicType <name: Identifier> <parameter_type: Type> => Parameter {<>};
 
 Block: Vec<Statement> = "{" <statement: BlockItem*> "}" => statement.concat();
 
@@ -53,43 +53,37 @@ BlockItem: Vec<Statement> = {
     Statement => vec![<>],
 };
 
-BasicType: BasicType = {
-    "void" => BasicType {},
-    "int" => BasicType {},
+Type: Type = <dimensions: Dimension*> => Type {<>};
+
+BasicType: () = {
+    "void",
+    "int",
 };
 
-Declaration: Vec<Declaration> = {
-    ConstantDeclaration,
-    VariableDeclaration,
+Dimension: Expression = "[" <Expression?> "]" => match <> {
+    Some(expression) => *expression,
+    None => Expression::Number(0),
 };
 
-ConstantDeclaration: Vec<Declaration> = "const" <constant_type: BasicType> <mut items: (<ConstantDefinition> ",")*> <last: ConstantDefinition> ";" => {
+Declaration: Vec<Declaration> = <const_keyword: "const"?> BasicType <mut items: (<VariableDefinition> ",")*> <last: VariableDefinition> ";" => {
     items.push(last);
     items
         .into_iter()
-        .map(|(name, value)| Declaration::Constant {
-            constant_type: constant_type.clone(),
-            name,
-            value,
+        .map(|variable_definition| match (const_keyword, variable_definition) {
+            (Some(_), (name, Type { dimensions }, Some(value))) if dimensions.is_empty() => Declaration::Constant {
+                name,
+                value,
+            },
+            (_, (name, variable_type, initial_value)) => Declaration::Variable {
+                variable_type,
+                name,
+                initial_value,
+            },
         })
         .collect()
 };
 
-ConstantDefinition: (String, Box<Expression>) = <Identifier> "=" <Expression> => (<>);
-
-VariableDeclaration: Vec<Declaration> = <variable_type: BasicType> <mut items: (<VariableDefinition> ",")*> <last: VariableDefinition> ";" => {
-    items.push(last);
-    items
-        .into_iter()
-        .map(|(name, value)| Declaration::Variable {
-            variable_type: variable_type.clone(),
-            name,
-            initial_value: value,
-        })
-        .collect()
-};
-
-VariableDefinition: (String, Option<Box<Expression>>) = Identifier ("=" <Expression>)? => (<>);
+VariableDefinition: (String, Type, Option<Box<Expression>>) = Identifier Type ("=" <Expression>)? => (<>);
 
 Statement: Statement = {
     OpenStatement,
@@ -205,8 +199,12 @@ Primary: Box<Expression> = {
     "(" <Expression> ")",
 };
 
-LValue: Box<Expression> = {
-    Identifier => Box::new(Expression::Variable(<>)),
+LValue: Box<Expression> = <variable_name: Identifier> <indices: Dimension*> => {
+    let mut expression = Box::new(Expression::Variable(variable_name));
+    for index in indices {
+        expression = Box::new(Expression::Element(expression, Box::new(index)));
+    }
+    expression
 };
 
 Number: i32 = IntegerLiteral => <>;

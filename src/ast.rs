@@ -19,23 +19,23 @@ pub struct FunctionDefinition {
 
 #[derive(Debug, Clone)]
 pub struct Parameter {
-    #[allow(unused)]
-    pub parameter_type: BasicType,
+    pub parameter_type: Type,
     pub name: String,
 }
 
 #[derive(Debug, Clone)]
-pub struct BasicType {}
+pub struct Type {
+    pub dimensions: Vec<Expression>,
+}
 
 #[derive(Debug, Clone)]
 pub enum Declaration {
     Constant {
-        constant_type: BasicType,
         name: String,
         value: Box<Expression>,
     },
     Variable {
-        variable_type: BasicType,
+        variable_type: Type,
         name: String,
         initial_value: Option<Box<Expression>>,
     },
@@ -67,6 +67,7 @@ pub enum Statement {
 #[derive(Debug, Clone)]
 pub enum Expression {
     Variable(String),
+    Element(Box<Expression>, Box<Expression>),
     Number(i32),
     Unary(UnaryOperator, Box<Expression>),
     Binary(Box<Expression>, BinaryOperator, Box<Expression>),
