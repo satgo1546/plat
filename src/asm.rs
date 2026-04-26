@@ -39,7 +39,11 @@ impl StackFrame {
         value: koopa::ir::Value,
     ) -> std::io::Result<()> {
         if value.is_global() {
-            return writeln!(f, "lw {}, {}(fp)", register, self.map[&value]);
+            return writeln!(
+                f,
+                "li t3, {}\nadd t3, fp, t3\nlw {register}, (t3)",
+                self.map[&value],
+            );
         }
         match dfg.value(value).kind() {
             koopa::ir::ValueKind::Integer(integer) => {
@@ -50,11 +54,19 @@ impl StackFrame {
                 if i < 8 {
                     writeln!(f, "mv {}, a{}", register, i)
                 } else {
-                    writeln!(f, "lw {}, {}(sp)", register, self.offset + (i - 8) * 4)
+                    writeln!(
+                        f,
+                        "li t3, {}\nadd t3, sp, t3\nlw {register}, (t3)",
+                        self.offset + (i - 8) * 4,
+                    )
                 }
             }
             koopa::ir::ValueKind::GlobalAlloc(_) => panic!("a local global?"),
-            _ => writeln!(f, "lw {}, {}(sp)", register, self.offset - self.map[&value]),
+            _ => writeln!(
+                f,
+                "li t3, {}\nadd t3, sp, t3\nlw {register}, (t3)",
+                self.offset - self.map[&value],
+            ),
         }
     }
 
@@ -64,11 +76,18 @@ impl StackFrame {
         register: &str,
         value: koopa::ir::Value,
     ) -> std::io::Result<()> {
-        write!(f, "addi {}, ", register)?;
         if value.is_global() {
-            writeln!(f, "fp, {}", self.map[&value] + 4)
+            writeln!(
+                f,
+                "li {register}, {}\nadd {register}, fp, {register}",
+                self.map[&value] + 4,
+            )
         } else {
-            writeln!(f, "sp, {}", self.offset - self.map[&value] + 4)
+            writeln!(
+                f,
+                "li {register}, {}\nadd {register}, sp, {register}",
+                self.offset - self.map[&value] + 4,
+            )
         }
     }
 
@@ -79,9 +98,18 @@ impl StackFrame {
         value: koopa::ir::Value,
     ) -> std::io::Result<()> {
         if value.is_global() {
-            writeln!(f, "sw {}, {}(fp)", register, self.map[&value])
+            writeln!(
+                f,
+                "li t3, {}\nadd t3, fp, t3\nsw {}, (t3)",
+                self.map[&value], register,
+            )
         } else {
-            writeln!(f, "sw {}, {}(sp)", register, self.offset - self.map[&value])
+            writeln!(
+                f,
+                "li t3, {}\nadd t3, sp, t3\nsw {}, (t3)",
+                self.offset - self.map[&value],
+                register,
+            )
         }
     }
 }
@@ -129,15 +157,14 @@ fn emit_function<W: Write>(
     stack_frame.offset = StackFrame::round(stack_frame.offset + max_args * 4);
     writeln!(
         f,
-        "\n{}:\naddi sp, sp, -{}\nsw ra, {}(sp)",
+        "\n{}:\nsw ra, -4(sp)\nli t1, -{}\nadd sp, sp, t1",
         &func_data.name()[1..],
         stack_frame.offset,
-        stack_frame.offset - 4,
     )?;
     if is_main {
         writeln!(
             f,
-            "addi fp, sp, {}",
+            "li t1, {}\nadd fp, sp, t1",
             stack_frame.offset - globals.offset - 4,
         )?;
         for &var in program.inst_layout() {
@@ -153,18 +180,18 @@ fn emit_function<W: Write>(
                 }
                 koopa::ir::ValueKind::ZeroInit(_) | koopa::ir::ValueKind::Undef(_) => {
                     let size = program.borrow_value(alloc.init()).ty().size();
-                    for i in 0..size / 4 {
-                        writeln!(f, "sw x0, {}(t1)", i * 4)?;
+                    for _ in 0..size / 4 {
+                        writeln!(f, "sw x0, (t1)\naddi t1, t1, 4")?;
                     }
                     Ok(())
                 }
                 koopa::ir::ValueKind::Aggregate(aggregate) => {
-                    for (i, &elem) in aggregate.elems().iter().enumerate() {
+                    for &elem in aggregate.elems() {
                         let elem = program.borrow_value(elem);
                         let koopa::ir::ValueKind::Integer(integer) = elem.kind() else {
                             panic!("nested initializer list not supported")
                         };
-                        writeln!(f, "li t2, {}\nsw t2, {}(t1)", integer.value(), i * 4)?;
+                        writeln!(f, "li t2, {}\nsw t2, (t1)\naddi t1, t1, 4", integer.value())?;
                     }
                     Ok(())
                 }
@@ -211,18 +238,21 @@ fn emit_value<W: Write>(
         }
         koopa::ir::ValueKind::Store(store) => {
             let value = store.value();
-            match stack_frame.map.get(&value) {
-                Some(_) => {
-                    stack_frame.load(f, dfg, "t1", store.value())?;
-                    stack_frame.load(f, dfg, "t2", store.dest())?;
-                    writeln!(f, "sw t1, (t2)")
-                }
-                None => todo!(),
+            let elems = if let koopa::ir::ValueKind::Aggregate(aggregate) = dfg.value(value).kind()
+            {
+                aggregate.elems()
+            } else {
+                &[value]
+            };
+            stack_frame.load(f, dfg, "t2", store.dest())?;
+            for &elem in elems {
+                stack_frame.load(f, dfg, "t1", elem)?;
+                writeln!(f, "sw t1, (t2)\naddi t2, t2, 4")?;
             }
+            Ok(())
         }
         koopa::ir::ValueKind::GetPtr(_) => todo!(),
         koopa::ir::ValueKind::GetElemPtr(get_elem_ptr) => {
-            stack_frame.load(f, dfg, "t2", get_elem_ptr.src())?;
             stack_frame.load(f, dfg, "t1", get_elem_ptr.index())?;
             let src = get_elem_ptr.src();
             let src = if src.is_global() {
@@ -236,7 +266,9 @@ fn emit_value<W: Write>(
             let koopa::ir::TypeKind::Array(ty, _) = ty.kind() else {
                 panic!("how? a basic value to getelemptr of?")
             };
-            writeln!(f, "muli t1, t1, {}\naddi t1, t2, t1", ty.size())?;
+            writeln!(f, "li t2, {}\nmul t1, t1, t2", ty.size())?;
+            stack_frame.load(f, dfg, "t2", get_elem_ptr.src())?;
+            writeln!(f, "add t1, t2, t1")?;
             stack_frame.store(f, "t1", value)
         }
         koopa::ir::ValueKind::Binary(binary) => {
@@ -335,8 +367,7 @@ fn emit_value<W: Write>(
             }
             writeln!(
                 f,
-                "lw ra, {}(sp)\naddi sp, sp, {}\nret",
-                stack_frame.offset - 4,
+                "li t1, {}\nadd sp, sp, t1\nlw ra, -4(sp)\nret",
                 stack_frame.offset,
             )
         }

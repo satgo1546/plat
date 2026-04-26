@@ -590,10 +590,8 @@ fn lower_program(ast: &ast::Program) -> ir::Program {
             .zip(Vec::from(func_data.params()))
         // clone forced by borrow checker 😾
         {
-            let alloc = func_data
-                .dfg_mut()
-                .new_value()
-                .alloc(koopa::ir::Type::get_i32());
+            let (_, ty) = lower_type(&scope, &parameter.parameter_type);
+            let alloc = func_data.dfg_mut().new_value().alloc(ty);
             push_inst(func_data, bb, alloc);
             let store = func_data.dfg_mut().new_value().store(param, alloc);
             push_inst(func_data, bb, store);
