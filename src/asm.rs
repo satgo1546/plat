@@ -152,9 +152,22 @@ fn emit_function<W: Write>(
                     writeln!(f, "li t2, {}\nsw t2, (t1)", integer.value())
                 }
                 koopa::ir::ValueKind::ZeroInit(_) | koopa::ir::ValueKind::Undef(_) => {
-                    writeln!(f, "sw x0, (t1)")
+                    let size = program.borrow_value(alloc.init()).ty().size();
+                    for i in 0..size / 4 {
+                        writeln!(f, "sw x0, {}(t1)", i * 4)?;
+                    }
+                    Ok(())
                 }
-                koopa::ir::ValueKind::Aggregate(_) => todo!(),
+                koopa::ir::ValueKind::Aggregate(aggregate) => {
+                    for (i, &elem) in aggregate.elems().iter().enumerate() {
+                        let elem = program.borrow_value(elem);
+                        let koopa::ir::ValueKind::Integer(integer) = elem.kind() else {
+                            panic!("nested initializer list not supported")
+                        };
+                        writeln!(f, "li t2, {}\nsw t2, {}(t1)", integer.value(), i * 4)?;
+                    }
+                    Ok(())
+                }
                 _ => panic!("invalid initializer for global variable"),
             }?;
         }
@@ -197,9 +210,15 @@ fn emit_value<W: Write>(
             stack_frame.store(f, "t1", value)
         }
         koopa::ir::ValueKind::Store(store) => {
-            stack_frame.load(f, dfg, "t1", store.value())?;
-            stack_frame.load(f, dfg, "t2", store.dest())?;
-            writeln!(f, "sw t1, (t2)")
+            let value = store.value();
+            match stack_frame.map.get(&value) {
+                Some(_) => {
+                    stack_frame.load(f, dfg, "t1", store.value())?;
+                    stack_frame.load(f, dfg, "t2", store.dest())?;
+                    writeln!(f, "sw t1, (t2)")
+                }
+                None => todo!(),
+            }
         }
         koopa::ir::ValueKind::GetPtr(_) => todo!(),
         koopa::ir::ValueKind::GetElemPtr(get_elem_ptr) => {

@@ -121,6 +121,67 @@ fn lower_type(scope: &HashMap<String, ScopeItem>, ast_type: &ast::Type) -> (Vec<
     (dimensions, ty)
 }
 
+fn pad_initializer(
+    item: ast::InitializerListItem,
+    dimensions: &[usize],
+) -> ast::InitializerListItem {
+    match (item, dimensions) {
+        (item @ ast::InitializerListItem::Value(_), []) => item,
+        (ast::InitializerListItem::List(list), &[len]) => {
+            let mut result = Vec::with_capacity(len);
+            for x in list.into_iter().take(len) {
+                result.push(x);
+            }
+            while result.len() < len {
+                result.push(ast::InitializerListItem::Value(Box::new(
+                    ast::Expression::Number(0),
+                )));
+            }
+            ast::InitializerListItem::List(result)
+        }
+        _ => todo!(),
+    }
+}
+
+fn lower_global_initializer(
+    program: &mut ir::Program,
+    scope: &mut HashMap<String, ScopeItem>,
+    item: &ast::InitializerListItem,
+) -> ir::Value {
+    match item {
+        ast::InitializerListItem::Value(expression) => program
+            .new_value()
+            .integer(evaluate_expression(scope, expression)),
+        ast::InitializerListItem::List(items) => {
+            let values = items
+                .iter()
+                .map(|item| lower_global_initializer(program, scope, item))
+                .collect();
+            program.new_value().aggregate(values)
+        }
+    }
+}
+
+fn lower_initializer(
+    func_data: &mut FunctionData,
+    bb: &mut BasicBlock,
+    scope: &mut HashMap<String, ScopeItem>,
+    item: &ast::InitializerListItem,
+) -> ir::Value {
+    match item {
+        ast::InitializerListItem::Value(expression) => {
+            lower_expression(func_data, bb, scope, expression)
+        }
+        ast::InitializerListItem::List(items) => {
+            let values = items
+                .iter()
+                .map(|item| lower_initializer(func_data, bb, scope, item))
+                .collect();
+            func_data.dfg_mut().new_value().aggregate(values)
+        }
+    }
+}
+
 fn lower_lvalue(
     func_data: &mut FunctionData,
     bb: &mut BasicBlock,
@@ -345,7 +406,8 @@ fn lower_statement(
             let alloc = func_data.dfg_mut().new_value().alloc(ty);
             push_inst(func_data, *bb, alloc);
             if let Some(value) = initial_value {
-                let value = lower_expression(func_data, bb, &scope, &value);
+                let value = pad_initializer(value.clone(), &dimensions);
+                let value = lower_initializer(func_data, bb, scope, &value);
                 let store = func_data.dfg_mut().new_value().store(value, alloc);
                 push_inst(func_data, *bb, store);
             }
@@ -493,9 +555,10 @@ fn lower_program(ast: &ast::Program) -> ir::Program {
             } => {
                 let (dimensions, ty) = lower_type(&scope, variable_type);
                 let value = match initial_value {
-                    Some(value) => program
-                        .new_value()
-                        .integer(evaluate_expression(&scope, &value)),
+                    Some(value) => {
+                        let value = pad_initializer(value.clone(), &dimensions);
+                        lower_global_initializer(&mut program, &mut scope, &value)
+                    }
                     None => program.new_value().zero_init(ty),
                 };
                 let alloc = program.new_value().global_alloc(value);

@@ -70,7 +70,7 @@ Declaration: Vec<Declaration> = <const_keyword: "const"?> BasicType <mut items: 
     items
         .into_iter()
         .map(|variable_definition| match (const_keyword, variable_definition) {
-            (Some(_), (name, Type { dimensions }, Some(value))) if dimensions.is_empty() => Declaration::Constant {
+            (Some(_), (name, Type { dimensions }, Some(InitializerListItem::Value(value)))) if dimensions.is_empty() => Declaration::Constant {
                 name,
                 value,
             },
@@ -83,7 +83,19 @@ Declaration: Vec<Declaration> = <const_keyword: "const"?> BasicType <mut items: 
         .collect()
 };
 
-VariableDefinition: (String, Type, Option<Box<Expression>>) = Identifier Type ("=" <Expression>)? => (<>);
+VariableDefinition: (String, Type, Option<InitializerListItem>) = Identifier Type ("=" <InitializerListItem>)? => (<>);
+
+InitializerList: Vec<InitializerListItem> = "{" <mut items: (<InitializerListItem> ",")*> <last: InitializerListItem?> "}" => {
+    if let Some(last) = last {
+        items.push(last);
+    }
+    items
+};
+
+InitializerListItem: InitializerListItem = {
+    Expression => InitializerListItem::Value(<>),
+    InitializerList => InitializerListItem::List(<>),
+};
 
 Statement: Statement = {
     OpenStatement,

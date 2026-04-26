@@ -37,8 +37,14 @@ pub enum Declaration {
     Variable {
         variable_type: Type,
         name: String,
-        initial_value: Option<Box<Expression>>,
+        initial_value: Option<InitializerListItem>,
     },
+}
+
+#[derive(Debug, Clone)]
+pub enum InitializerListItem {
+    Value(Box<Expression>),
+    List(Vec<InitializerListItem>),
 }
 
 #[derive(Debug, Clone)]
