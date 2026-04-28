@@ -200,27 +200,30 @@ fn lower_global_initializer(
 }
 
 fn lower_initializer(
-    func_data: &mut FunctionData,
+    program: &mut ir::Program,
+    func: ir::Function,
     bb: &mut BasicBlock,
     scope: &mut HashMap<String, ScopeItem>,
     item: &ast::InitializerListItem,
 ) -> ir::Value {
     match item {
         ast::InitializerListItem::Value(expression) => {
-            lower_expression(func_data, bb, scope, expression)
+            lower_expression(program, func, bb, scope, expression)
         }
         ast::InitializerListItem::List(items) => {
             let values = items
                 .iter()
-                .map(|item| lower_initializer(func_data, bb, scope, item))
+                .map(|item| lower_initializer(program, func, bb, scope, item))
                 .collect();
+            let func_data = program.func_mut(func);
             func_data.dfg_mut().new_value().aggregate(values)
         }
     }
 }
 
 fn lower_lvalue(
-    func_data: &mut FunctionData,
+    program: &mut ir::Program,
+    func: ir::Function,
     bb: &mut BasicBlock,
     scope: &HashMap<String, ScopeItem>,
     expression: &ast::Expression,
@@ -240,9 +243,10 @@ fn lower_lvalue(
                     };
                     value
                 }
-                _ => lower_lvalue(func_data, bb, scope, array),
+                _ => lower_lvalue(program, func, bb, scope, array),
             };
-            let index = lower_expression(func_data, bb, scope, index);
+            let index = lower_expression(program, func, bb, scope, index);
+            let func_data = program.func_mut(func);
             let ptr = func_data.dfg_mut().new_value().get_elem_ptr(array, index);
             push_inst(func_data, *bb, ptr);
             ptr
@@ -252,11 +256,13 @@ fn lower_lvalue(
 }
 
 fn lower_expression(
-    func_data: &mut FunctionData,
+    program: &mut ir::Program,
+    func: ir::Function,
     bb: &mut BasicBlock,
     scope: &HashMap<String, ScopeItem>,
     expression: &ast::Expression,
 ) -> Value {
+    let func_data = program.func_mut(func);
     match expression {
         ast::Expression::Variable(name) => match scope[name] {
             ScopeItem::Constant(value) => func_data.dfg_mut().new_value().integer(value),
@@ -268,17 +274,19 @@ fn lower_expression(
             ScopeItem::Function(_) => panic!("second-class function"),
         },
         ast::Expression::Element(_, _) => {
-            let ptr = lower_lvalue(func_data, bb, scope, expression);
+            let ptr = lower_lvalue(program, func, bb, scope, expression);
+            let func_data = program.func_mut(func);
             let value = func_data.dfg_mut().new_value().load(ptr);
             push_inst(func_data, *bb, value);
             value
         }
         ast::Expression::Number(x) => func_data.dfg_mut().new_value().integer(*x),
         ast::Expression::Unary(operator, expression) => match operator {
-            ast::UnaryOperator::Plus => lower_expression(func_data, bb, scope, expression),
+            ast::UnaryOperator::Plus => lower_expression(program, func, bb, scope, expression),
             ast::UnaryOperator::Minus => {
                 let zero = func_data.dfg_mut().new_value().integer(0);
-                let x = lower_expression(func_data, bb, scope, expression);
+                let x = lower_expression(program, func, bb, scope, expression);
+                let func_data = program.func_mut(func);
                 let value = func_data
                     .dfg_mut()
                     .new_value()
@@ -288,7 +296,8 @@ fn lower_expression(
             }
             ast::UnaryOperator::BooleanNot => {
                 let zero = func_data.dfg_mut().new_value().integer(0);
-                let x = lower_expression(func_data, bb, scope, expression);
+                let x = lower_expression(program, func, bb, scope, expression);
+                let func_data = program.func_mut(func);
                 let value = func_data
                     .dfg_mut()
                     .new_value()
@@ -298,7 +307,8 @@ fn lower_expression(
             }
             ast::UnaryOperator::BitNot => {
                 let minus1 = func_data.dfg_mut().new_value().integer(-1);
-                let x = lower_expression(func_data, bb, scope, expression);
+                let x = lower_expression(program, func, bb, scope, expression);
+                let func_data = program.func_mut(func);
                 let value = func_data
                     .dfg_mut()
                     .new_value()
@@ -308,7 +318,8 @@ fn lower_expression(
             }
         },
         ast::Expression::Binary(a, operator, b) => {
-            let a = lower_expression(func_data, bb, scope, a);
+            let a = lower_expression(program, func, bb, scope, a);
+            let func_data = program.func_mut(func);
             let operator = match operator {
                 ast::BinaryOperator::Plus => ir::BinaryOp::Add,
                 ast::BinaryOperator::Minus => ir::BinaryOp::Sub,
@@ -330,7 +341,8 @@ fn lower_expression(
 
                     *bb = then_bb;
                     let zero = func_data.dfg_mut().new_value().integer(0);
-                    let b = lower_expression(func_data, bb, scope, b);
+                    let b = lower_expression(program, func, bb, scope, b);
+                    let func_data = program.func_mut(func);
                     let b = func_data
                         .dfg_mut()
                         .new_value()
@@ -369,7 +381,8 @@ fn lower_expression(
 
                     *bb = else_bb;
                     let zero = func_data.dfg_mut().new_value().integer(0);
-                    let b = lower_expression(func_data, bb, scope, b);
+                    let b = lower_expression(program, func, bb, scope, b);
+                    let func_data = program.func_mut(func);
                     let b = func_data
                         .dfg_mut()
                         .new_value()
@@ -385,7 +398,8 @@ fn lower_expression(
                     return func_data.dfg_mut().new_value().bb_params(*bb)[0];
                 }
             };
-            let b = lower_expression(func_data, bb, scope, b);
+            let b = lower_expression(program, func, bb, scope, b);
+            let func_data = program.func_mut(func);
             let value = func_data.dfg_mut().new_value().binary(operator, a, b);
             push_inst(func_data, *bb, value);
             value
@@ -394,12 +408,13 @@ fn lower_expression(
             function_name,
             arguments,
         } => match scope[function_name] {
-            ScopeItem::Function(func) => {
+            ScopeItem::Function(callee) => {
                 let args = arguments
                     .iter()
-                    .map(|arg| lower_expression(func_data, bb, scope, arg))
+                    .map(|arg| lower_expression(program, func, bb, scope, arg))
                     .collect();
-                let value = func_data.dfg_mut().new_value().call(func, args);
+                let func_data = program.func_mut(func);
+                let value = func_data.dfg_mut().new_value().call(callee, args);
                 push_inst(func_data, *bb, value);
                 value
             }
@@ -421,12 +436,14 @@ struct LoopInfo {
 }
 
 fn lower_statement(
-    func_data: &mut FunctionData,
+    program: &mut ir::Program,
+    func: ir::Function,
     bb: &mut BasicBlock,
     scope: &mut HashMap<String, ScopeItem>,
     loop_info: Option<&LoopInfo>,
     statement: &ast::Statement,
 ) -> () {
+    let func_data = program.func_mut(func);
     match statement {
         ast::Statement::Declaration(ast::Declaration::Constant { name, value }) => {
             scope.insert(
@@ -444,25 +461,27 @@ fn lower_statement(
             push_inst(func_data, *bb, alloc);
             if let Some(value) = initial_value {
                 let value = pad_initializer(value.clone(), &dimensions);
-                let value = lower_initializer(func_data, bb, scope, &value);
+                let value = lower_initializer(program, func, bb, scope, &value);
+                let func_data = program.func_mut(func);
                 let store = func_data.dfg_mut().new_value().store(value, alloc);
                 push_inst(func_data, *bb, store);
             }
             scope.insert(name.clone(), ScopeItem::Variable(alloc));
         }
         ast::Statement::Assign { target, value } => {
-            let ptr = lower_lvalue(func_data, bb, &scope, target);
-            let value = lower_expression(func_data, bb, &scope, &value);
+            let ptr = lower_lvalue(program, func, bb, &scope, target);
+            let value = lower_expression(program, func, bb, &scope, &value);
+            let func_data = program.func_mut(func);
             let store = func_data.dfg_mut().new_value().store(value, ptr);
             push_inst(func_data, *bb, store);
         }
         ast::Statement::Expression(expression) => {
-            lower_expression(func_data, bb, scope, expression);
+            lower_expression(program, func, bb, scope, expression);
         }
         ast::Statement::Block(statements) => {
             let mut scope = scope.clone();
             for statement in statements {
-                lower_statement(func_data, bb, &mut scope, loop_info, statement);
+                lower_statement(program, func, bb, &mut scope, loop_info, statement);
             }
         }
         ast::Statement::If {
@@ -473,16 +492,18 @@ fn lower_statement(
             let mut then_bb = new_bb(func_data, 0);
             let mut else_bb = new_bb(func_data, 0);
             let end_bb = new_bb(func_data, 0);
-            let condition = lower_expression(func_data, bb, scope, condition);
+            let condition = lower_expression(program, func, bb, scope, condition);
+            let func_data = program.func_mut(func);
             let branch = func_data
                 .dfg_mut()
                 .new_value()
                 .branch(condition, then_bb, else_bb);
             push_inst(func_data, *bb, branch);
-            lower_statement(func_data, &mut then_bb, scope, loop_info, then);
+            lower_statement(program, func, &mut then_bb, scope, loop_info, then);
             if let Some(otherwise) = otherwise {
-                lower_statement(func_data, &mut else_bb, scope, loop_info, otherwise);
+                lower_statement(program, func, &mut else_bb, scope, loop_info, otherwise);
             }
+            let func_data = program.func_mut(func);
             if let Some(&x) = func_data
                 .layout_mut()
                 .bb_mut(then_bb)
@@ -504,7 +525,8 @@ fn lower_statement(
             push_inst(func_data, *bb, jump);
 
             *bb = condition_bb;
-            let condition = lower_expression(func_data, bb, scope, condition);
+            let condition = lower_expression(program, func, bb, scope, condition);
+            let func_data = program.func_mut(func);
             let branch = func_data
                 .dfg_mut()
                 .new_value()
@@ -513,7 +535,8 @@ fn lower_statement(
 
             *bb = body_bb;
             lower_statement(
-                func_data,
+                program,
+                func,
                 bb,
                 scope,
                 Some(&LoopInfo {
@@ -522,6 +545,7 @@ fn lower_statement(
                 }),
                 body,
             );
+            let func_data = program.func_mut(func);
             push_inst(func_data, *bb, jump);
 
             *bb = end_bb;
@@ -541,7 +565,8 @@ fn lower_statement(
             push_inst(func_data, *bb, jump);
         }
         ast::Statement::Return(expression) => {
-            let ret_value = lower_expression(func_data, bb, &scope, &expression);
+            let ret_value = lower_expression(program, func, bb, &scope, &expression);
+            let func_data = program.func_mut(func);
             let ret = func_data.dfg_mut().new_value().ret(Some(ret_value));
             push_inst(func_data, *bb, ret);
         }
@@ -635,8 +660,9 @@ fn lower_program(ast: &ast::Program) -> ir::Program {
             scope.insert(parameter.name.clone(), ScopeItem::Variable(alloc));
         }
         for statement in &function.body {
-            lower_statement(func_data, &mut bb, &mut scope, None, statement);
+            lower_statement(&mut program, func, &mut bb, &mut scope, None, statement);
         }
+        let func_data = program.func_mut(func);
         let zero = func_data.dfg_mut().new_value().integer(0);
         let ret = func_data.dfg_mut().new_value().ret(Some(zero));
         push_inst(func_data, bb, ret);
