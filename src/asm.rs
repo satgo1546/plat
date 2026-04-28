@@ -266,7 +266,22 @@ fn emit_value<W: Write>(
             }
             Ok(())
         }
-        koopa::ir::ValueKind::GetPtr(_) => todo!(),
+        koopa::ir::ValueKind::GetPtr(get_ptr) => {
+            stack_frame.load(f, dfg, "t1", get_ptr.index())?;
+            let src = get_ptr.src();
+            let src = if src.is_global() {
+                &program.borrow_value(src)
+            } else {
+                dfg.value(src)
+            };
+            let koopa::ir::TypeKind::Pointer(ty) = src.ty().kind() else {
+                panic!("how? a value to getptr of?")
+            };
+            writeln!(f, "li t2, {}\nmul t1, t1, t2", ty.size())?;
+            stack_frame.load(f, dfg, "t2", get_ptr.src())?;
+            writeln!(f, "add t1, t2, t1")?;
+            stack_frame.store(f, "t1", value)
+        }
         koopa::ir::ValueKind::GetElemPtr(get_elem_ptr) => {
             stack_frame.load(f, dfg, "t1", get_elem_ptr.index())?;
             let src = get_elem_ptr.src();

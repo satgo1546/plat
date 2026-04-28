@@ -227,14 +227,12 @@ fn lower_lvalue(
     bb: &mut BasicBlock,
     scope: &HashMap<String, ScopeItem>,
     expression: &ast::Expression,
-) -> Value {
+) -> Result<Value, ()> {
     match expression {
-        ast::Expression::Variable(name) => {
-            let ScopeItem::Variable(value) = scope[name] else {
-                panic!("`{}` is not a variable", name)
-            };
-            value
-        }
+        ast::Expression::Variable(name) => match scope[name] {
+            ScopeItem::Variable(value) => Ok(value),
+            _ => Err(()),
+        },
         ast::Expression::Element(array, index) => {
             let array = match &**array {
                 ast::Expression::Variable(name) => {
@@ -243,15 +241,35 @@ fn lower_lvalue(
                     };
                     value
                 }
-                _ => lower_lvalue(program, func, bb, scope, array),
+                _ => lower_lvalue(program, func, bb, scope, array)?,
             };
             let index = lower_expression(program, func, bb, scope, index);
+            let array_type = if array.is_global() {
+                program.borrow_value(array).ty().clone()
+            } else {
+                program.func(func).dfg().value(array).ty().clone()
+            };
+            let ptr = match array_type.kind() {
+                ir::TypeKind::Pointer(ty) => match ty.kind() {
+                    ir::TypeKind::Pointer(_) => {
+                        let func_data = program.func_mut(func);
+                        let load = func_data.dfg_mut().new_value().load(array);
+                        push_inst(func_data, *bb, load);
+                        func_data.dfg_mut().new_value().get_ptr(load, index)
+                    }
+                    ir::TypeKind::Array(_, _) => {
+                        let func_data = program.func_mut(func);
+                        func_data.dfg_mut().new_value().get_elem_ptr(array, index)
+                    }
+                    _ => panic!("cannot index"),
+                },
+                _ => panic!("cannot index"),
+            };
             let func_data = program.func_mut(func);
-            let ptr = func_data.dfg_mut().new_value().get_elem_ptr(array, index);
             push_inst(func_data, *bb, ptr);
-            ptr
+            Ok(ptr)
         }
-        _ => panic!("invalid lvalue"),
+        _ => Err(()),
     }
 }
 
@@ -274,7 +292,7 @@ fn lower_expression(
             ScopeItem::Function(_) => panic!("second-class function"),
         },
         ast::Expression::Element(_, _) => {
-            let ptr = lower_lvalue(program, func, bb, scope, expression);
+            let ptr = lower_lvalue(program, func, bb, scope, expression).expect("should be lvalue");
             let func_data = program.func_mut(func);
             let value = func_data.dfg_mut().new_value().load(ptr);
             push_inst(func_data, *bb, value);
@@ -409,10 +427,27 @@ fn lower_expression(
             arguments,
         } => match scope[function_name] {
             ScopeItem::Function(callee) => {
-                let args = arguments
-                    .iter()
-                    .map(|arg| lower_expression(program, func, bb, scope, arg))
-                    .collect();
+                let mut args = Vec::with_capacity(arguments.len());
+                for arg in arguments {
+                    let value = if let Ok(value) = lower_lvalue(program, func, bb, scope, arg)
+                        && let ty = if value.is_global() {
+                            program.borrow_value(value).ty().clone()
+                        } else {
+                            program.func(func).dfg().value(value).ty().clone()
+                        }
+                        && let koopa::ir::TypeKind::Pointer(ty) = ty.kind()
+                        && let koopa::ir::TypeKind::Array(_, _) = ty.kind()
+                    {
+                        let func_data = program.func_mut(func);
+                        let zero = func_data.dfg_mut().new_value().integer(0);
+                        let ptr = func_data.dfg_mut().new_value().get_elem_ptr(value, zero);
+                        push_inst(func_data, *bb, ptr);
+                        ptr
+                    } else {
+                        lower_expression(program, func, bb, scope, arg)
+                    };
+                    args.push(value);
+                }
                 let func_data = program.func_mut(func);
                 let value = func_data.dfg_mut().new_value().call(callee, args);
                 push_inst(func_data, *bb, value);
@@ -469,7 +504,7 @@ fn lower_statement(
             scope.insert(name.clone(), ScopeItem::Variable(alloc));
         }
         ast::Statement::Assign { target, value } => {
-            let ptr = lower_lvalue(program, func, bb, &scope, target);
+            let ptr = lower_lvalue(program, func, bb, &scope, target).expect("should be lvalue");
             let value = lower_expression(program, func, bb, &scope, &value);
             let func_data = program.func_mut(func);
             let store = func_data.dfg_mut().new_value().store(value, ptr);
@@ -635,7 +670,12 @@ fn lower_program(ast: &ast::Program) -> ir::Program {
             function
                 .parameters
                 .iter()
-                .map(|p| (Some(format!("@{}", p.name)), ir::Type::get_i32()))
+                .map(|p| {
+                    (
+                        Some(format!("@{}", p.name)),
+                        lower_type(&scope, &p.parameter_type).1,
+                    )
+                })
                 .collect(),
             ir::Type::get_i32(),
         );
