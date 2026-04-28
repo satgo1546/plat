@@ -111,7 +111,7 @@ fn lower_type(scope: &HashMap<String, ScopeItem>, ast_type: &ast::Type) -> (Vec<
         .map(|expression| evaluate_expression(scope, expression) as usize)
         .collect();
     let mut ty = ir::Type::get_i32();
-    for dimension in dimensions.iter().copied() {
+    for &dimension in dimensions.iter().rev() {
         if dimension == 0 {
             ty = ir::Type::get_pointer(ty);
         } else {
@@ -127,20 +127,57 @@ fn pad_initializer(
 ) -> ast::InitializerListItem {
     match (item, dimensions) {
         (item @ ast::InitializerListItem::Value(_), []) => item,
-        (ast::InitializerListItem::List(list), &[len]) => {
-            let mut result = Vec::with_capacity(len);
-            for x in list.into_iter().take(len) {
-                result.push(x);
-            }
-            while result.len() < len {
-                result.push(ast::InitializerListItem::Value(Box::new(
-                    ast::Expression::Number(0),
-                )));
+        (ast::InitializerListItem::Value(_), _) => panic!("array initialized with scalar"),
+        (ast::InitializerListItem::List(list), [_, ..]) => {
+            let mut result = flat_pad_initializer(list, dimensions);
+            for &d in dimensions[1..].iter().rev() {
+                result = result
+                    .chunks_exact(d)
+                    .map(|chunk| ast::InitializerListItem::List(chunk.to_vec()))
+                    .collect();
             }
             ast::InitializerListItem::List(result)
         }
-        _ => todo!(),
+        (ast::InitializerListItem::List(_), []) => panic!("scalar initialized with list"),
     }
+}
+
+fn flat_pad_initializer(
+    items: Vec<ast::InitializerListItem>,
+    dimensions: &[usize],
+) -> Vec<ast::InitializerListItem> {
+    let mut result = Vec::new();
+    let target_size = dimensions.iter().product();
+    for item in items {
+        match item {
+            ast::InitializerListItem::Value(_) => result.push(item),
+            ast::InitializerListItem::List(list) => {
+                let mut s = result.len();
+                let mut i = 1;
+                for (j, &len) in dimensions.iter().enumerate().rev() {
+                    if s % len == 0 {
+                        s /= len;
+                    } else {
+                        i = j + 1;
+                        break;
+                    }
+                }
+                if i >= dimensions.len() {
+                    panic!("invalid initializer")
+                }
+                result.extend(flat_pad_initializer(list, &dimensions[i..]));
+            }
+        }
+        if result.len() > target_size {
+            panic!("too many elements")
+        }
+    }
+    while result.len() < target_size {
+        result.push(ast::InitializerListItem::Value(Box::new(
+            ast::Expression::Number(0),
+        )));
+    }
+    result
 }
 
 fn lower_global_initializer(

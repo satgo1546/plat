@@ -1,5 +1,25 @@
 use std::{collections::HashMap, io::Write};
 
+fn flatten_initializer<GetValue: Copy + Fn(koopa::ir::Value) -> koopa::ir::entities::ValueData>(
+    value: koopa::ir::Value,
+    get_value: GetValue,
+) -> Vec<Option<koopa::ir::Value>> {
+    match get_value(value).kind() {
+        koopa::ir::ValueKind::ZeroInit(_) | koopa::ir::ValueKind::Undef(_) => {
+            let size = get_value(value).ty().size();
+            vec![None; size / 4]
+        }
+        koopa::ir::ValueKind::Aggregate(aggregate) => {
+            let mut result = Vec::new();
+            for &elem in aggregate.elems() {
+                result.extend(flatten_initializer(elem, get_value));
+            }
+            result
+        }
+        _ => vec![Some(value)],
+    }
+}
+
 pub fn emit_program<W: Write>(f: &mut W, program: &koopa::ir::Program) -> std::io::Result<()> {
     let mut globals = StackFrame {
         map: HashMap::with_capacity(program.inst_layout().len()),
@@ -174,29 +194,21 @@ fn emit_function<W: Write>(
             };
             stack_frame.load_address(f, "t1", var)?;
             stack_frame.store(f, "t1", var)?;
-            match program.borrow_value(alloc.init()).kind() {
-                koopa::ir::ValueKind::Integer(integer) => {
-                    writeln!(f, "li t2, {}\nsw t2, (t1)", integer.value())
-                }
-                koopa::ir::ValueKind::ZeroInit(_) | koopa::ir::ValueKind::Undef(_) => {
-                    let size = program.borrow_value(alloc.init()).ty().size();
-                    for _ in 0..size / 4 {
-                        writeln!(f, "sw x0, (t1)\naddi t1, t1, 4")?;
-                    }
-                    Ok(())
-                }
-                koopa::ir::ValueKind::Aggregate(aggregate) => {
-                    for &elem in aggregate.elems() {
+            let initializer =
+                flatten_initializer(alloc.init(), |value| program.borrow_value(value).clone());
+            for elem in initializer {
+                let integer = match elem {
+                    Some(elem) => {
                         let elem = program.borrow_value(elem);
                         let koopa::ir::ValueKind::Integer(integer) = elem.kind() else {
                             panic!("nested initializer list not supported")
                         };
-                        writeln!(f, "li t2, {}\nsw t2, (t1)\naddi t1, t1, 4", integer.value())?;
+                        integer.value()
                     }
-                    Ok(())
-                }
-                _ => panic!("invalid initializer for global variable"),
-            }?;
+                    None => 0,
+                };
+                writeln!(f, "li t2, {}\nsw t2, (t1)\naddi t1, t1, 4", integer)?;
+            }
         }
     }
     for (&bb, node) in func_data.layout().bbs() {
@@ -238,16 +250,19 @@ fn emit_value<W: Write>(
         }
         koopa::ir::ValueKind::Store(store) => {
             let value = store.value();
-            let elems = if let koopa::ir::ValueKind::Aggregate(aggregate) = dfg.value(value).kind()
-            {
-                aggregate.elems()
-            } else {
-                &[value]
-            };
+            let elems = flatten_initializer(value, |value| dfg.value(value).clone());
             stack_frame.load(f, dfg, "t2", store.dest())?;
-            for &elem in elems {
-                stack_frame.load(f, dfg, "t1", elem)?;
-                writeln!(f, "sw t1, (t2)\naddi t2, t2, 4")?;
+            for elem in elems {
+                match elem {
+                    Some(elem) => {
+                        stack_frame.load(f, dfg, "t1", elem)?;
+                        writeln!(f, "sw t1, (t2)")?;
+                    }
+                    None => {
+                        writeln!(f, "sw x0, (t2)")?;
+                    }
+                }
+                writeln!(f, "addi t2, t2, 4")?;
             }
             Ok(())
         }
