@@ -33,7 +33,7 @@ TopLevelItem: TopLevelItem = {
     FunctionDefinition => TopLevelItem::Function(<>),
 };
 
-FunctionDefinition: FunctionDefinition = <function_type: BasicType> <name: Identifier> "(" <mut parameters: (<Parameter> ",")*> <last_parameter: Parameter?> ")" <body: Block> => {
+FunctionDefinition: FunctionDefinition = <function_type: BasicType> <name: Identifier> "(" <mut parameters: (<Parameter> ",")*> <last_parameter: Parameter?> ")" <body: BlockOrSemicolon> => {
     if let Some(last_parameter) = last_parameter {
         parameters.push(last_parameter);
     }
@@ -45,6 +45,11 @@ FunctionDefinition: FunctionDefinition = <function_type: BasicType> <name: Ident
 };
 
 Parameter: Parameter = BasicType <name: Identifier> <parameter_type: Type> => Parameter {<>};
+
+BlockOrSemicolon: Option<Vec<Statement>> = {
+    Block => Some(<>),
+    ";" => None,
+};
 
 Block: Vec<Statement> = "{" <statement: BlockItem*> "}" => statement.concat();
 

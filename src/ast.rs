@@ -14,7 +14,7 @@ pub enum TopLevelItem {
 pub struct FunctionDefinition {
     pub parameters: Vec<Parameter>,
     pub name: String,
-    pub body: Vec<Statement>,
+    pub body: Option<Vec<Statement>>,
 }
 
 #[derive(Debug, Clone)]

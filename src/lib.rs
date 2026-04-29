@@ -683,6 +683,7 @@ fn lower_program(ast: &ast::Program) -> ir::Program {
         funcs.push(func);
     }
     for (function, func) in ast.functions.iter().zip(funcs) {
+        let Some(body) = &function.body else { continue };
         let func_data = program.func_mut(func);
         let mut bb = new_bb(func_data, 0);
         let mut scope = scope.clone();
@@ -699,7 +700,7 @@ fn lower_program(ast: &ast::Program) -> ir::Program {
             push_inst(func_data, bb, store);
             scope.insert(parameter.name.clone(), ScopeItem::Variable(alloc));
         }
-        for statement in &function.body {
+        for statement in body {
             lower_statement(&mut program, func, &mut bb, &mut scope, None, statement);
         }
         let func_data = program.func_mut(func);
