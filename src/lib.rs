@@ -199,24 +199,29 @@ fn lower_global_initializer(
     }
 }
 
-fn lower_initializer(
+fn lower_local_initializer(
     program: &mut ir::Program,
     func: ir::Function,
     bb: &mut BasicBlock,
     scope: &mut HashMap<String, ScopeItem>,
+    pointer: ir::Value,
     item: &ast::InitializerListItem,
-) -> ir::Value {
+) {
     match item {
         ast::InitializerListItem::Value(expression) => {
-            lower_expression(program, func, bb, scope, expression)
+            let value = lower_expression(program, func, bb, scope, expression);
+            let func_data = program.func_mut(func);
+            let store = func_data.dfg_mut().new_value().store(value, pointer);
+            push_inst(func_data, *bb, store);
         }
         ast::InitializerListItem::List(items) => {
-            let values = items
-                .iter()
-                .map(|item| lower_initializer(program, func, bb, scope, item))
-                .collect();
-            let func_data = program.func_mut(func);
-            func_data.dfg_mut().new_value().aggregate(values)
+            for (i, item) in items.iter().enumerate() {
+                let func_data = program.func_mut(func);
+                let index = func_data.dfg_mut().new_value().integer(i as i32);
+                let elem = func_data.dfg_mut().new_value().get_elem_ptr(pointer, index);
+                push_inst(func_data, *bb, elem);
+                lower_local_initializer(program, func, bb, scope, elem, item);
+            }
         }
     }
 }
@@ -494,12 +499,9 @@ fn lower_statement(
             let (dimensions, ty) = lower_type(&scope, variable_type);
             let alloc = func_data.dfg_mut().new_value().alloc(ty);
             push_inst(func_data, *bb, alloc);
-            if let Some(value) = initial_value {
-                let value = pad_initializer(value.clone(), &dimensions);
-                let value = lower_initializer(program, func, bb, scope, &value);
-                let func_data = program.func_mut(func);
-                let store = func_data.dfg_mut().new_value().store(value, alloc);
-                push_inst(func_data, *bb, store);
+            if let Some(initial_value) = initial_value {
+                let initial_value = pad_initializer(initial_value.clone(), &dimensions);
+                lower_local_initializer(program, func, bb, scope, alloc, &initial_value);
             }
             scope.insert(name.clone(), ScopeItem::Variable(alloc));
         }
