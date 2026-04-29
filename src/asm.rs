@@ -194,20 +194,37 @@ fn emit_function<W: Write>(
             };
             stack_frame.load_address(f, "t1", var)?;
             stack_frame.store(f, "t1", var)?;
-            let initializer =
-                flatten_initializer(alloc.init(), |value| program.borrow_value(value).clone());
-            for elem in initializer {
-                let integer = match elem {
-                    Some(elem) => {
-                        let elem = program.borrow_value(elem);
-                        let koopa::ir::ValueKind::Integer(integer) = elem.kind() else {
-                            panic!("nested initializer list not supported")
+            match program.borrow_value(alloc.init()).kind() {
+                koopa::ir::ValueKind::ZeroInit(_) | koopa::ir::ValueKind::Undef(_) => {
+                    let size = program.borrow_value(alloc.init()).ty().size();
+                    writeln!(
+                        f,
+                        "li t2, {size}
+add t2, t1, t2
+1:
+sw x0, (t1)
+addi t1, t1, 4
+blt t1, t2, 1b"
+                    )?;
+                }
+                _ => {
+                    let initializer = flatten_initializer(alloc.init(), |value| {
+                        program.borrow_value(value).clone()
+                    });
+                    for elem in initializer {
+                        let integer = match elem {
+                            Some(elem) => {
+                                let elem = program.borrow_value(elem);
+                                let koopa::ir::ValueKind::Integer(integer) = elem.kind() else {
+                                    panic!("nested initializer list not supported")
+                                };
+                                integer.value()
+                            }
+                            None => 0,
                         };
-                        integer.value()
+                        writeln!(f, "li t2, {}\nsw t2, (t1)\naddi t1, t1, 4", integer)?;
                     }
-                    None => 0,
-                };
-                writeln!(f, "li t2, {}\nsw t2, (t1)\naddi t1, t1, 4", integer)?;
+                }
             }
         }
     }
