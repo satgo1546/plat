@@ -54,6 +54,14 @@ fn push_inst(func_data: &mut FunctionData, bb: BasicBlock, inst: Value) {
         && let ir::ValueKind::Branch(_) | ir::ValueKind::Jump(_) | ir::ValueKind::Return(_) =
             func_data.dfg().value(last_value).kind()
     {
+        if let ir::ValueKind::Alloc(_) = func_data.dfg().value(inst).kind() {
+            func_data
+                .layout_mut()
+                .bb_mut(bb)
+                .insts_mut()
+                .push_key_front(inst)
+                .unwrap();
+        }
         return;
     }
     func_data
