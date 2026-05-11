@@ -27,6 +27,10 @@ which is in turn based on [Typing Haskell in Haskell](https://web.cecs.pdx.edu/~
 
 [Making a Language](https://thunderseethe.dev/series/making-a-language/)
 
+### `sysy` — SysY to RISC-V compiler in Rust
+
+[PKU Compiler Course Online Documentation](https://pku-minic.github.io/online-doc/)
+
 ## Playgrounds
 
 Playgrounds host code I have written while learning various programming languages and tools.
@@ -38,4 +42,4 @@ They are usually monstrous single-module spaghetti that serve absolutely no purp
 
 ## License
 
-Code on all branches in this repository is licensed under the MIT license.
+Code on all branches in this repository is licensed under the MIT license unless otherwise noted.
